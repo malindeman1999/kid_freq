@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local app state / datasets / generated artifacts
+analysis_gui_state.json
+data_sets/
+synthetic data/
+synthetic_vna/
+*.pkl
+*.pdf
+*.png
+
+# OS/editor
+.DS_Store
+Thumbs.db
