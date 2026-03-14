@@ -90,6 +90,8 @@ class InterpolationSmoothMixin:
         if not self._selected_scans_have_attached_filter():
             messagebox.showwarning(
                 "Missing filter data",
+                "Run pipeline in order:\n"
+                "Phase Correction -> Baseline Filtering -> Interp+Smooth.\n\n"
                 "All selected scans must have attached baseline-filter data first.",
             )
             return
@@ -250,10 +252,24 @@ class InterpolationSmoothMixin:
         width_ghz = float(self.interp_smooth_slider.get()) / 1000.0
         for scan in scans:
             bf = scan.baseline_filter
-            fd = np.asarray(bf.get("filtered_data"))
-            f_keep = fd[0, :]
-            a_keep = fd[1, :]
-            p_keep = fd[2, :]
+            fd = np.asarray(bf.get("filtered_data_complex"), dtype=np.complex128)
+            keep = np.asarray(bf.get("retained_mask"), dtype=bool)
+            phase2 = scan.candidate_resonators.get("phase_correction_2", {})
+            phase_full = np.asarray(phase2.get("corrected_phase_deg"), dtype=float)
+            if fd.ndim != 2 or fd.shape[0] != 2 or fd.shape[1] == 0:
+                continue
+            if keep.shape != scan.freq.shape or np.count_nonzero(keep) != fd.shape[1]:
+                continue
+            if phase_full.shape != scan.freq.shape:
+                z2 = np.asarray(phase2.get("corrected_complex"), dtype=np.complex128)
+                if z2.shape != scan.freq.shape:
+                    z2 = scan.amplitude() * np.exp(1j * np.radians(scan.phase_deg_unwrapped()))
+                phase_full = np.degrees(np.unwrap(np.angle(z2)))
+
+            f_keep = np.asarray(scan.freq[keep], dtype=float)
+            z_keep = np.asarray(fd[1, :], dtype=np.complex128)
+            a_keep = np.abs(z_keep)
+            p_keep = np.asarray(phase_full[keep], dtype=float)
 
             order = np.argsort(f_keep)
             f_keep = f_keep[order]
@@ -266,12 +282,16 @@ class InterpolationSmoothMixin:
 
             a_smooth = _gaussian_fft_convolve(f_full, a_interp, width_ghz)
             p_smooth = _gaussian_fft_convolve(f_full, p_interp, width_ghz)
+            z_interp = a_interp * np.exp(1j * np.radians(p_interp))
+            z_smooth = a_smooth * np.exp(1j * np.radians(p_smooth))
 
             self.interp_preview[self._scan_key(scan)] = {
                 "interp_amp": a_interp,
-                "interp_phase_deg_unwrapped": p_interp,
+                "interp_phase": p_interp,
                 "smooth_amp": a_smooth,
-                "smooth_phase_deg_unwrapped": p_smooth,
+                "smooth_phase": p_smooth,
+                "interp_complex": z_interp,
+                "smooth_complex": z_smooth,
                 "source_points_freq": f_keep,
                 "source_points_amp": a_keep,
                 "source_points_phase": p_keep,
@@ -301,53 +321,74 @@ class InterpolationSmoothMixin:
             prev = self.interp_preview.get(self._scan_key(scan))
             if prev is None:
                 continue
+            bf = scan.baseline_filter if isinstance(scan.baseline_filter, dict) else {}
+            keep = np.asarray(bf.get("retained_mask"), dtype=bool)
+            phase2 = scan.candidate_resonators.get("phase_correction_2", {})
+            z2 = np.asarray(phase2.get("corrected_complex"), dtype=np.complex128)
+            if z2.shape != scan.freq.shape:
+                z2 = scan.amplitude() * np.exp(1j * np.radians(scan.phase_deg_unwrapped()))
+            amp_input = np.abs(z2)
+            phase_input = np.degrees(np.unwrap(np.angle(z2)))
 
-            ax_a.plot(scan.freq, scan.s21_amp, color="0.6", linewidth=0.8, label="Raw amp")
-            ax_a.plot(scan.freq, prev["interp_amp"], color="tab:blue", linewidth=0.8, label="Interp")
-            ax_a.plot(scan.freq, prev["smooth_amp"], color="tab:green", linewidth=1.2, label="Smoothed")
+            interp_amp = np.asarray(prev["interp_amp"], dtype=float)
+            interp_phase = np.asarray(prev["interp_phase"], dtype=float)
+            smooth_amp = np.asarray(prev["smooth_amp"], dtype=float)
+            smooth_phase = np.asarray(prev["smooth_phase"], dtype=float)
+
             ax_a.plot(
-                prev["source_points_freq"],
-                prev["source_points_amp"],
-                linestyle="none",
-                marker=".",
-                markersize=2.5,
-                color="tab:orange",
-                label="Median points",
+                scan.freq,
+                amp_input,
+                color="0.6",
+                linewidth=0.8,
+                label="Amplitude input",
             )
+            ax_a.plot(scan.freq, interp_amp, color="tab:blue", linewidth=0.8, label="Interp")
+            ax_a.plot(scan.freq, smooth_amp, color="tab:green", linewidth=1.2, label="Smoothed")
+            if keep.shape == scan.freq.shape and np.any(keep):
+                ax_a.plot(
+                    scan.freq[keep],
+                    amp_input[keep],
+                    linestyle="none",
+                    marker=".",
+                    markersize=2.5,
+                    color="tab:orange",
+                    label="Retained",
+                )
             ax_a.set_ylabel("|S21|")
             ax_a.grid(True, alpha=0.3)
             ax_a.set_title(scan.filename.split("\\")[-1], fontsize=9)
 
             ax_p.plot(
                 scan.freq,
-                scan.s21_phase_deg_unwrapped,
+                phase_input,
                 color="0.6",
                 linewidth=0.8,
-                label="Raw phase",
+                label="Phase input",
             )
             ax_p.plot(
                 scan.freq,
-                prev["interp_phase_deg_unwrapped"],
-                color="tab:red",
+                interp_phase,
+                color="tab:blue",
                 linewidth=0.8,
                 label="Interp",
             )
             ax_p.plot(
                 scan.freq,
-                prev["smooth_phase_deg_unwrapped"],
-                color="tab:purple",
+                smooth_phase,
+                color="tab:green",
                 linewidth=1.2,
                 label="Smoothed",
             )
-            ax_p.plot(
-                prev["source_points_freq"],
-                prev["source_points_phase"],
-                linestyle="none",
-                marker=".",
-                markersize=2.5,
-                color="tab:orange",
-                label="Median points",
-            )
+            if keep.shape == scan.freq.shape and np.any(keep):
+                ax_p.plot(
+                    scan.freq[keep],
+                    phase_input[keep],
+                    linestyle="none",
+                    marker=".",
+                    markersize=2.5,
+                    color="tab:orange",
+                    label="Retained-associated phase",
+                )
             ax_p.set_ylabel("Phase (deg)")
             ax_p.grid(True, alpha=0.3)
 
@@ -393,14 +434,10 @@ class InterpolationSmoothMixin:
                 "attached_by": _current_user(),
                 "smoothing_width_ghz": prev["smoothing_width_ghz"],
                 "smoothing_width_mhz": prev["smoothing_width_ghz"] * 1000.0,
-                "interp_amp": prev["interp_amp"],
-                "interp_phase_deg_unwrapped": prev["interp_phase_deg_unwrapped"],
-                "smooth_amp": prev["smooth_amp"],
-                "smooth_phase_deg_unwrapped": prev["smooth_phase_deg_unwrapped"],
-                "smooth_data": np.vstack(
-                    (scan.freq, prev["smooth_amp"], prev["smooth_phase_deg_unwrapped"])
-                ),
-                "smooth_data_format": "(3, N) rows = [freq, amp, phase_deg_unwrapped]",
+                "interp_complex": prev["interp_complex"],
+                "smooth_complex": prev["smooth_complex"],
+                "smooth_data_complex": np.vstack((scan.freq, prev["smooth_complex"])),
+                "smooth_data_complex_format": "(2, N) rows = [freq, complex_s21]",
             }
             scan.processing_history.append(
                 _make_event(
@@ -422,6 +459,7 @@ class InterpolationSmoothMixin:
         if self.interp_status_var is not None:
             self.interp_status_var.set(f"Attached to {count} selected scan(s).")
         self._log(f"Attached interpolated+smoothed data to {count} selected scan(s).")
+        self._autosave_dataset()
 
     def _interp_close(self) -> None:
         if self.interp_window is not None and self.interp_window.winfo_exists():

@@ -20,12 +20,20 @@ class ResonanceSelectionMixin:
         if not self._selected_scans_have_attached_normalized():
             messagebox.showwarning(
                 "Missing normalized data",
+                "Run pipeline in order:\n"
+                "Phase Correction -> Baseline Filtering -> Interp+Smooth -> Normalize Baseline -> Resonator Selection.\n\n"
                 "All selected scans must have attached normalized data first.",
             )
             return
 
         chosen_scan = self._choose_resonance_scan(scans)
         if chosen_scan is None:
+            return
+        if "phase_class_points" not in chosen_scan.candidate_resonators:
+            messagebox.showwarning(
+                "Missing phase class points",
+                "Run 'Phase Correction' and click Attach for this scan before resonance selection.",
+            )
             return
         self._last_resonance_scan_key = self._scan_key(chosen_scan)
 
@@ -45,6 +53,7 @@ class ResonanceSelectionMixin:
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
         tk.Button(top, text="Choose Scan", command=self.open_resonance_selection_window).pack(side="right")
+        tk.Button(top, text="Reset View", command=self._res_reset_view).pack(side="right", padx=(0, 8))
         self.res_auto_y_var = tk.BooleanVar(value=True)
         self.res_use_corrected_var = tk.BooleanVar(value=True)
         self.res_show_phase_var = tk.BooleanVar(value=False)
@@ -61,6 +70,7 @@ class ResonanceSelectionMixin:
             text="Use corrected data (normalized)",
             variable=self.res_use_corrected_var,
             command=self._res_on_controls_changed,
+            state="disabled",
         ).pack(side="left")
         tk.Checkbutton(
             controls,
@@ -91,7 +101,7 @@ class ResonanceSelectionMixin:
         self._res_selected_range = tuple(view["xlim"])
         self._res_manual_ylim = tuple(view["ylim"]) if view["ylim"] is not None else None
         self.res_auto_y_var.set(bool(view["auto_y"]))
-        self.res_use_corrected_var.set(bool(view["use_corrected_data"]))
+        self.res_use_corrected_var.set(True)
         self.res_show_phase_var.set(bool(view["show_phase_left"]))
         self._res_render()
 
@@ -159,49 +169,24 @@ class ResonanceSelectionMixin:
             "xlim": xlim,
             "ylim": ylim,
             "auto_y": bool(self.res_auto_y_var.get()) if self.res_auto_y_var is not None else True,
-            "use_corrected_data": bool(self.res_use_corrected_var.get())
-            if self.res_use_corrected_var is not None
-            else True,
+            "use_corrected_data": True,
             "show_phase_left": bool(self.res_show_phase_var.get())
             if self.res_show_phase_var is not None
             else False,
         }
 
     def _res_get_normalized_complex(self, scan) -> np.ndarray:
-        norm = scan.baseline_filter.get("normalized", {})
-        z = norm.get("norm_complex")
-        if z is not None:
-            arr = np.asarray(z, dtype=np.complex128)
-            if arr.shape == scan.freq.shape:
-                return arr
-        amp = np.asarray(norm.get("norm_amp"), dtype=float)
-        phase = np.asarray(norm.get("norm_phase_deg_unwrapped"), dtype=float)
-        return amp * np.exp(1j * np.radians(phase))
+        norm = scan.baseline_filter["normalized"]
+        arr = np.asarray(norm["norm_complex"], dtype=np.complex128)
+        if arr.shape != scan.freq.shape:
+            raise ValueError("Invalid normalized attachment: norm_complex shape mismatch.")
+        return arr
 
     def _res_get_normalized_amp(self, scan) -> np.ndarray:
-        norm = scan.baseline_filter.get("normalized", {})
-        a = norm.get("norm_amp")
-        if a is not None:
-            arr = np.asarray(a, dtype=float)
-            if arr.shape == scan.freq.shape:
-                return arr
         return np.abs(self._res_get_normalized_complex(scan))
 
     def _res_get_normalized_phase(self, scan) -> np.ndarray:
-        norm = scan.baseline_filter.get("normalized", {})
-        p = norm.get("norm_phase_deg_unwrapped")
-        if p is not None:
-            arr = np.asarray(p, dtype=float)
-            if arr.shape == scan.freq.shape:
-                return arr
         return np.degrees(np.unwrap(np.angle(self._res_get_normalized_complex(scan))))
-
-    def _res_get_raw_complex(self, scan) -> np.ndarray:
-        return scan.s21_amp * np.exp(1j * np.radians(scan.s21_phase_deg_unwrapped))
-
-    def _res_get_raw_phase(self, scan) -> np.ndarray:
-        # Raw VNA phase view: wrapped phase, not unwrapped.
-        return np.degrees(np.angle(self._res_get_raw_complex(scan)))
 
     def _res_autoscale_amp_y_for_visible_x(self, ax) -> None:
         if self.res_auto_y_var is None or not bool(self.res_auto_y_var.get()):
@@ -245,6 +230,18 @@ class ResonanceSelectionMixin:
         self._res_save_view_settings()
         self._res_render()
 
+    def _res_reset_view(self) -> None:
+        scan = self._res_get_scan()
+        if scan is None:
+            return
+        freq = np.asarray(scan.freq, dtype=float)
+        if freq.size == 0:
+            return
+        self._res_selected_range = (float(np.min(freq)), float(np.max(freq)))
+        self._res_manual_ylim = None
+        self._res_save_view_settings()
+        self._res_render()
+
     def _res_extract_candidates(self, scan) -> tuple[np.ndarray, np.ndarray]:
         cand = scan.candidate_resonators
         g = cand.get("gaussian_convolution", {})
@@ -252,6 +249,26 @@ class ResonanceSelectionMixin:
         gfreq = np.asarray(g.get("candidate_freq", np.array([])), dtype=float)
         dfreq = np.asarray(d.get("candidate_freq", np.array([])), dtype=float)
         return gfreq, dfreq
+
+    def _res_nearest_indices(self, query_freqs: np.ndarray, ref_freqs: np.ndarray) -> np.ndarray:
+        q = np.asarray(query_freqs, dtype=float).ravel()
+        ref = np.asarray(ref_freqs, dtype=float).ravel()
+        if q.size == 0 or ref.size == 0:
+            return np.empty((0,), dtype=int)
+        idx = []
+        for f in q:
+            idx.append(int(np.argmin(np.abs(ref - f))))
+        return np.asarray(idx, dtype=int)
+
+    def _res_get_phase_class_points(self, scan) -> dict:
+        points = scan.candidate_resonators["phase_class_points"]
+        if not isinstance(points, dict):
+            raise ValueError("phase_class_points must be a dict attached by Phase Correction.")
+        return {
+            "regular_freqs": np.asarray(points["regular_freqs"], dtype=float),
+            "irregular_congruent_freqs": np.asarray(points["irregular_congruent_freqs"], dtype=float),
+            "irregular_noncongruent_freqs": np.asarray(points["irregular_noncongruent_freqs"], dtype=float),
+        }
 
     def _res_render(self) -> None:
         if self.res_figure is None or self.res_canvas is None:
@@ -266,16 +283,12 @@ class ResonanceSelectionMixin:
             return
 
         freq = scan.freq
-        use_corrected = self.res_use_corrected_var is None or bool(self.res_use_corrected_var.get())
+        use_corrected = True
         show_phase = self.res_show_phase_var is not None and bool(self.res_show_phase_var.get())
-        if use_corrected:
-            y_left = self._res_get_normalized_phase(scan) if show_phase else self._res_get_normalized_amp(scan)
-        else:
-            y_left = self._res_get_raw_phase(scan) if show_phase else scan.s21_amp
-        z_corr = self._res_get_normalized_complex(scan)
-        z_raw = self._res_get_raw_complex(scan)
-        z = z_corr if use_corrected else z_raw
+        y_left = self._res_get_normalized_phase(scan) if show_phase else self._res_get_normalized_amp(scan)
+        z = self._res_get_normalized_complex(scan)
         gfreq, dfreq = self._res_extract_candidates(scan)
+        phase_points = self._res_get_phase_class_points(scan)
 
         self.res_figure.clear()
         ax_amp = self.res_figure.add_subplot(1, 2, 1)
@@ -337,6 +350,55 @@ class ResonanceSelectionMixin:
 
         if np.count_nonzero(mask) >= 2:
             ax_amp.plot(freq[mask], y_left[mask], color="tab:blue", linewidth=1.2, label="Displayed region")
+
+            reg_freqs = phase_points["regular_freqs"]
+            if reg_freqs.size:
+                rmask = (reg_freqs >= lo) & (reg_freqs <= hi)
+                if np.any(rmask):
+                    rf = reg_freqs[rmask]
+                    ri = self._res_nearest_indices(rf, freq)
+                    ax_amp.plot(
+                        freq[ri],
+                        y_left[ri],
+                        linestyle="none",
+                        marker="o",
+                        markersize=4,
+                        color="black",
+                        label="Regular (360*n)",
+                    )
+
+            cong_freqs = phase_points["irregular_congruent_freqs"]
+            if cong_freqs.size:
+                cmask = (cong_freqs >= lo) & (cong_freqs <= hi)
+                if np.any(cmask):
+                    cf = cong_freqs[cmask]
+                    ci = self._res_nearest_indices(cf, freq)
+                    ax_amp.plot(
+                        freq[ci],
+                        y_left[ci],
+                        linestyle="none",
+                        marker="o",
+                        markersize=5,
+                        color="pink",
+                        label="Irregular congruent",
+                    )
+
+            nonc_freqs = phase_points["irregular_noncongruent_freqs"]
+            if nonc_freqs.size:
+                nmask = (nonc_freqs >= lo) & (nonc_freqs <= hi)
+                if np.any(nmask):
+                    nf = nonc_freqs[nmask]
+                    ni = self._res_nearest_indices(nf, freq)
+                    ax_amp.plot(
+                        freq[ni],
+                        y_left[ni],
+                        linestyle="none",
+                        marker="o",
+                        markersize=5,
+                        color="blue",
+                        label="Irregular non-congruent",
+                    )
+
             ax_iq.plot(
                 np.real(z[mask]),
                 np.imag(z[mask]),
@@ -387,6 +449,45 @@ class ResonanceSelectionMixin:
                         markersize=6,
                         color="cyan",
                         label="dS21/df peaks",
+                    )
+            if reg_freqs.size:
+                rmask = (reg_freqs >= lo) & (reg_freqs <= hi)
+                if np.any(rmask):
+                    ri = self._res_nearest_indices(reg_freqs[rmask], freq)
+                    ax_iq.plot(
+                        np.real(z[ri]),
+                        np.imag(z[ri]),
+                        linestyle="none",
+                        marker="o",
+                        markersize=4,
+                        color="black",
+                        label="Regular (360*n)",
+                    )
+            if cong_freqs.size:
+                cmask = (cong_freqs >= lo) & (cong_freqs <= hi)
+                if np.any(cmask):
+                    ci = self._res_nearest_indices(cong_freqs[cmask], freq)
+                    ax_iq.plot(
+                        np.real(z[ci]),
+                        np.imag(z[ci]),
+                        linestyle="none",
+                        marker="o",
+                        markersize=5,
+                        color="pink",
+                        label="Irregular congruent",
+                    )
+            if nonc_freqs.size:
+                nmask = (nonc_freqs >= lo) & (nonc_freqs <= hi)
+                if np.any(nmask):
+                    ni = self._res_nearest_indices(nonc_freqs[nmask], freq)
+                    ax_iq.plot(
+                        np.real(z[ni]),
+                        np.imag(z[ni]),
+                        linestyle="none",
+                        marker="o",
+                        markersize=5,
+                        color="blue",
+                        label="Irregular non-congruent",
                     )
             self.res_status_var.set(
                 f"Displayed {np.count_nonzero(mask)} points: {lo:.9g} to {hi:.9g}."
@@ -440,3 +541,8 @@ class ResonanceSelectionMixin:
         self._res_scan_key = None
         self._res_selected_range = None
         self._res_manual_ylim = None
+    def _res_get_raw_complex(self, scan) -> np.ndarray:
+        return scan.complex_s21()
+
+    def _res_get_raw_phase(self, scan) -> np.ndarray:
+        return np.degrees(np.angle(self._res_get_raw_complex(scan)))

@@ -324,9 +324,10 @@ class GaussianConvolutionMixin:
             norm = scan.baseline_filter.get("normalized", {})
             if not isinstance(norm, dict):
                 continue
-            amp = np.asarray(norm.get("norm_amp"), dtype=float)
-            if amp.shape != scan.freq.shape:
+            z = np.asarray(norm.get("norm_complex"), dtype=np.complex128)
+            if z.shape != scan.freq.shape:
                 continue
+            amp = np.abs(z)
             f_sorted = np.sort(np.asarray(scan.freq, dtype=float))
             diffs = np.diff(f_sorted)
             diffs = diffs[np.isfinite(diffs)]
@@ -546,6 +547,7 @@ class GaussianConvolutionMixin:
         self._log(
             f"Attached Gaussian-smoothed normalized |S21| to {count} selected scan(s); overwrote {overwritten} prior attachment(s)."
         )
+        self._autosave_dataset()
 
     def _gauss_close(self) -> None:
         if self.gauss_window is not None and self.gauss_window.winfo_exists():

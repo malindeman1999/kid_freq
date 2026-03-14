@@ -64,6 +64,26 @@ class BaselineFilterMixin:
             ]
             self._refresh_status()
             self._log("No prior selection. Auto-selected all scans for baseline filtering.")
+        scans = self._selected_scans()
+        if not scans:
+            return
+        missing_phase2 = []
+        for scan in scans:
+            phase2 = scan.candidate_resonators.get("phase_correction_2")
+            if not isinstance(phase2, dict):
+                missing_phase2.append(Path(scan.filename).name)
+                continue
+            z2 = np.asarray(phase2.get("corrected_complex"), dtype=np.complex128)
+            if z2.shape != scan.freq.shape:
+                missing_phase2.append(Path(scan.filename).name)
+        if missing_phase2:
+            messagebox.showwarning(
+                "Missing Phase Correction 2 output",
+                "Run pipeline in order:\n"
+                "Phase Correction -> Phase Correction 2 -> Baseline Filtering.\n\n"
+                "Use 'Phase Correction 2' and click Attach for all selected scans before baseline filtering.",
+            )
+            return
 
         if self.baseline_window is not None and self.baseline_window.winfo_exists():
             self.baseline_window.lift()
@@ -547,7 +567,6 @@ class BaselineFilterMixin:
                 self.dataset.processing_history.append(
                     _make_event("compute_baseline_filter", dict(self._baseline_compute_context))
                 )
-                self._mark_dirty()
                 self._schedule_baseline_preview()
                 self._set_attach_button_state(attached=False)
                 if self._baseline_recompute_pending:
@@ -604,21 +623,29 @@ class BaselineFilterMixin:
 
             n = len(scans)
             self.baseline_figure.clear()
-            axes = self.baseline_figure.subplots(n, 1, sharex=False)
-            axes_list = list(np.atleast_1d(axes))
+            axes = self.baseline_figure.subplots(n, 2, sharex=False)
+            axes_arr = np.atleast_2d(axes)
+            axes_list = list(axes_arr.ravel())
 
             for i, scan in enumerate(scans):
-                amp = scan.amplitude()
-                ax = axes_list[i]
-                ax.plot(scan.freq, amp, color="0.6", linewidth=0.8, label="Amplitude (unfiltered)")
+                phase2 = scan.candidate_resonators.get("phase_correction_2", {})
+                z2 = np.asarray(phase2.get("corrected_complex"), dtype=np.complex128)
+                if z2.shape != scan.freq.shape:
+                    z2 = scan.amplitude() * np.exp(1j * np.radians(scan.phase_deg_unwrapped()))
+                amp = np.abs(z2)
+                ph = np.degrees(np.unwrap(np.angle(z2)))
+                ax_a = axes_arr[i, 0]
+                ax_p = axes_arr[i, 1]
+                ax_a.plot(scan.freq, amp, color="0.6", linewidth=0.8, label="Amplitude input")
+                ax_p.plot(scan.freq, ph, color="0.6", linewidth=0.8, label="Phase input")
 
                 key = self._scan_key(scan)
                 result = self._baseline_preview_results.get(key)
                 if result is not None:
                     baseline = result["baseline_amplitude"]
                     keep = result["retained_mask"].astype(bool)
-                    ax.plot(scan.freq, baseline, color="tab:blue", linewidth=0.8, label="Median")
-                    ax.plot(
+                    ax_a.plot(scan.freq, baseline, color="tab:blue", linewidth=0.8, label="Median")
+                    ax_a.plot(
                         scan.freq[keep],
                         amp[keep],
                         linestyle="none",
@@ -627,13 +654,27 @@ class BaselineFilterMixin:
                         color="tab:orange",
                         label="Retained",
                     )
-                ax.set_ylabel("|S21|")
-                ax.grid(True, alpha=0.3)
-                ax.set_title(Path(scan.filename).name, fontsize=9)
+                    ax_p.plot(
+                        scan.freq[keep],
+                        ph[keep],
+                        linestyle="none",
+                        marker=".",
+                        markersize=2.0,
+                        color="tab:orange",
+                        label="Retained-associated phase",
+                    )
+                ax_a.set_ylabel("|S21|")
+                ax_p.set_ylabel("Phase (deg)")
+                ax_a.grid(True, alpha=0.3)
+                ax_p.grid(True, alpha=0.3)
+                ax_a.set_title(Path(scan.filename).name + " | Amplitude", fontsize=9)
+                ax_p.set_title(Path(scan.filename).name + " | Phase", fontsize=9)
                 if i == 0:
-                    ax.legend(loc="upper right", fontsize=8)
+                    ax_a.legend(loc="upper right", fontsize=8)
+                    ax_p.legend(loc="upper right", fontsize=8)
 
-            axes_list[-1].set_xlabel("Frequency")
+            axes_arr[-1, 0].set_xlabel("Frequency")
+            axes_arr[-1, 1].set_xlabel("Frequency")
             computed_count = len(self._baseline_preview_results)
             title_suffix = (
                 f"Computed overlays: {computed_count}/{len(scans)}"
@@ -695,9 +736,10 @@ class BaselineFilterMixin:
             keep = result["retained_mask"].astype(bool)
             baseline = result["baseline_amplitude"]
             filtered_freq = scan.freq[keep]
-            filtered_amp = scan.s21_amp[keep]
-            filtered_phase = scan.s21_phase_deg_unwrapped[keep]
-            filtered_data = np.vstack((filtered_freq, filtered_amp, filtered_phase))
+            phase2 = scan.candidate_resonators["phase_correction_2"]
+            corrected_complex = np.asarray(phase2["corrected_complex"], dtype=np.complex128)
+            filtered_complex = corrected_complex[keep]
+            filtered_data_complex = np.vstack((filtered_freq, filtered_complex))
             scan.baseline_filter = {
                 "attached_at": attached_at,
                 "attached_by": _current_user(),
@@ -709,11 +751,8 @@ class BaselineFilterMixin:
                 "slope_survivor_mask": result.get("slope_survivor_mask"),
                 "retained_mask": keep,
                 "baseline_amplitude": baseline,
-                "filtered_freq": filtered_freq,
-                "filtered_amp": filtered_amp,
-                "filtered_phase_deg_unwrapped": filtered_phase,
-                "filtered_data": filtered_data,
-                "filtered_data_format": "(3, N_kept) rows = [freq, amp, phase_deg_unwrapped]",
+                "filtered_data_complex": filtered_data_complex,
+                "filtered_data_complex_format": "(2, N_kept) rows = [freq, complex_s21]",
             }
             scan.processing_history.append(
                 _make_event(
@@ -746,6 +785,7 @@ class BaselineFilterMixin:
         self._mark_dirty()
 
         self._log(f"Attached baseline filter to {len(scans)} selected scan(s).")
+        self._autosave_dataset()
         if self.baseline_status_var is not None:
             self.baseline_status_var.set(f"Attached to {len(scans)} scan(s).")
         self._set_attach_button_state(attached=True)

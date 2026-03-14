@@ -378,6 +378,7 @@ class SyntheticGeneratorMixin:
         self._mark_dirty()
         self._refresh_status()
         self._log(f"Generated {len(saved)} synthetic VNA files in {out_dir}")
+        self._autosave_dataset()
         if self.synth_status_var is not None:
             self.synth_status_var.set(f"Generated {len(saved)} file(s).")
         messagebox.showinfo(

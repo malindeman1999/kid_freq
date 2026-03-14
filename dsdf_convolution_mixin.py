@@ -171,6 +171,21 @@ class DSDFConvolutionMixin:
             variable=self.dsdf_auto_y_var,
             command=self._dsdf_on_auto_y_toggled,
         ).pack(side="left", padx=(0, 12))
+        self.dsdf_show_phase_context_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            controls,
+            text="Context: Phase (else |S21|)",
+            variable=self.dsdf_show_phase_context_var,
+            command=self._dsdf_on_slider_released,
+        ).pack(side="left", padx=(0, 12))
+        self.dsdf_use_corrected_context_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            controls,
+            text="Context: Corrected (else Raw)",
+            variable=self.dsdf_use_corrected_context_var,
+            command=self._dsdf_on_slider_released,
+            state="disabled",
+        ).pack(side="left", padx=(0, 12))
 
         self.dsdf_status_var = tk.StringVar(value="Adjust settings and release slider to update.")
         tk.Label(controls, textvariable=self.dsdf_status_var, anchor="w").pack(
@@ -213,7 +228,7 @@ class DSDFConvolutionMixin:
         if self.dsdf_status_var is not None:
             self.dsdf_status_var.set("Adjusting settings...")
 
-    def _dsdf_on_slider_released(self, _event: tk.Event) -> None:
+    def _dsdf_on_slider_released(self, _event: tk.Event | None = None) -> None:
         self._dsdf_compute_preview()
         self._dsdf_render()
         self._dsdf_set_attach_state(attached=False)
@@ -259,21 +274,10 @@ class DSDFConvolutionMixin:
             norm = scan.baseline_filter.get("normalized", {})
             if not isinstance(norm, dict):
                 continue
-            z = norm.get("norm_complex")
-            if z is None:
-                amp = np.asarray(norm.get("norm_amp"), dtype=float)
-                ph = np.asarray(norm.get("norm_phase_deg_unwrapped"), dtype=float)
-                if amp.shape != scan.freq.shape or ph.shape != scan.freq.shape:
-                    continue
-                z = amp * np.exp(1j * np.radians(ph))
-            else:
-                z = np.asarray(z, dtype=complex)
-                if z.shape != scan.freq.shape:
-                    continue
-                amp = np.asarray(norm.get("norm_amp"), dtype=float)
-                if amp.shape != scan.freq.shape:
-                    amp = np.abs(z)
-
+            z = np.asarray(norm.get("norm_complex"), dtype=np.complex128)
+            if z.shape != scan.freq.shape:
+                continue
+            amp = np.abs(z)
             freq = np.asarray(scan.freq, dtype=float)
             order = np.argsort(freq)
             f_sorted = freq[order]
@@ -306,7 +310,8 @@ class DSDFConvolutionMixin:
                 maxima_idx.append(i0 + int(np.argmax(local)))
 
             self.dsdf_preview[self._scan_key(scan)] = {
-                "context_amp": amp,
+                "context_amp_corr": np.asarray(amp, dtype=float),
+                "context_phase_corr_wrapped": np.angle(z),
                 "raw_dmag_norm": dmag_norm,
                 "smooth_dmag_norm": smooth,
                 "fwhm_ghz": fwhm_ghz,
@@ -341,12 +346,19 @@ class DSDFConvolutionMixin:
             freq = scan.freq
             raw = prev["raw_dmag_norm"]
             sm = prev["smooth_dmag_norm"]
+            show_phase = bool(self.dsdf_show_phase_context_var.get()) if self.dsdf_show_phase_context_var is not None else False
+            if show_phase:
+                ctx = prev["context_phase_corr_wrapped"]
+                ctx_label = "Corrected phase (wrapped, rad) context"
+            else:
+                ctx = prev["context_amp_corr"]
+                ctx_label = "Corrected |S21| context"
             ax.plot(
                 freq,
-                prev["context_amp"],
+                ctx,
                 color="0.85",
                 linewidth=1.0,
-                label="|S21| context",
+                label=ctx_label,
                 zorder=0,
             )
             ax.plot(freq, raw, color="0.5", linewidth=0.8, label="Raw |dS21/df| (norm)")
@@ -360,7 +372,10 @@ class DSDFConvolutionMixin:
             if idx.size:
                 ax.plot(freq[idx], raw[idx], "o", color="tab:red", markersize=4, label="Region maxima (raw)")
                 ax.plot(freq[idx], sm[idx], "x", color="black", markersize=5, label="Region maxima (smooth)")
-            ax.set_ylabel("|dS21/df|")
+            if show_phase:
+                ax.set_ylabel("|dS21/df| (norm) + Phase context (rad)")
+            else:
+                ax.set_ylabel("|dS21/df| (norm) + |S21| context")
             ax.grid(True, alpha=0.3)
             ax.set_title(Path(scan.filename).name, fontsize=9)
             if i == 0:
@@ -442,6 +457,7 @@ class DSDFConvolutionMixin:
         if self.dsdf_status_var is not None:
             self.dsdf_status_var.set(f"Attached to {count} selected scan(s).")
         self._log(f"Attached |dS21/df| convolution data to {count} selected scan(s).")
+        self._autosave_dataset()
 
     def _dsdf_close(self) -> None:
         if self.dsdf_window is not None and self.dsdf_window.winfo_exists():
@@ -454,6 +470,8 @@ class DSDFConvolutionMixin:
         self.dsdf_threshold_slider = None
         self.dsdf_min_region_slider = None
         self.dsdf_auto_y_var = None
+        self.dsdf_show_phase_context_var = None
+        self.dsdf_use_corrected_context_var = None
         self.dsdf_status_var = None
         self.dsdf_attach_button = None
         self.dsdf_preview = {}

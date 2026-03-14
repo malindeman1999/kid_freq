@@ -32,7 +32,9 @@ from gaussian_convolution_mixin import GaussianConvolutionMixin
 from interpolation_smooth_mixin import InterpolationSmoothMixin
 from normalization_mixin import NormalizationMixin
 from resonance_selection_mixin import ResonanceSelectionMixin
+from second_phase_correction_mixin import SecondPhaseCorrectionMixin
 from synthetic_generator_mixin import SyntheticGeneratorMixin
+from unwrap_phase_mixin import UnwrapPhaseMixin
 
 class DataAnalysisGUI(
     AnalysisSelectorPlotMixin,
@@ -42,7 +44,9 @@ class DataAnalysisGUI(
     InterpolationSmoothMixin,
     NormalizationMixin,
     ResonanceSelectionMixin,
+    SecondPhaseCorrectionMixin,
     SyntheticGeneratorMixin,
+    UnwrapPhaseMixin,
 ):
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -55,8 +59,9 @@ class DataAnalysisGUI(
         self.scan_count_var = tk.StringVar()
         self.selection_var = tk.StringVar()
         self.saved_var = tk.StringVar()
-        self.save_button: Optional[tk.Button] = None
         self.synth_button: Optional[tk.Button] = None
+        self.unwrap_button: Optional[tk.Button] = None
+        self.phase2_button: Optional[tk.Button] = None
         self.interp_button: Optional[tk.Button] = None
         self._dirty = False
         self.baseline_window: Optional[tk.Toplevel] = None
@@ -115,6 +120,8 @@ class DataAnalysisGUI(
         self.dsdf_threshold_slider: Optional[tk.Scale] = None
         self.dsdf_min_region_slider: Optional[tk.Scale] = None
         self.dsdf_auto_y_var: Optional[tk.BooleanVar] = None
+        self.dsdf_show_phase_context_var: Optional[tk.BooleanVar] = None
+        self.dsdf_use_corrected_context_var: Optional[tk.BooleanVar] = None
         self.dsdf_status_var: Optional[tk.StringVar] = None
         self.dsdf_attach_button: Optional[tk.Button] = None
         self.dsdf_preview: Dict[str, Dict[str, np.ndarray]] = {}
@@ -136,6 +143,26 @@ class DataAnalysisGUI(
         self.synth_preview_files: List[np.ndarray] = []
         self.synth_amp_ax = None
         self.synth_iq_ax = None
+        self.unwrap_window: Optional[tk.Toplevel] = None
+        self.unwrap_canvas: Optional[FigureCanvasTkAgg] = None
+        self.unwrap_toolbar: Optional[NavigationToolbar2Tk] = None
+        self.unwrap_figure: Optional[Figure] = None
+        self.unwrap_threshold_slider: Optional[tk.Scale] = None
+        self.unwrap_max_passes_slider: Optional[tk.Scale] = None
+        self.unwrap_min_sep_slider: Optional[tk.Scale] = None
+        self.unwrap_apply_exact_360_var: Optional[tk.BooleanVar] = None
+        self.unwrap_p_random_var: Optional[tk.StringVar] = None
+        self.unwrap_p_random_entry: Optional[tk.Entry] = None
+        self.unwrap_auto_y_var: Optional[tk.BooleanVar] = None
+        self.unwrap_status_var: Optional[tk.StringVar] = None
+        self.unwrap_attach_button: Optional[tk.Button] = None
+        self.unwrap_preview: Dict[str, Dict[str, np.ndarray]] = {}
+        self.phase2_window: Optional[tk.Toplevel] = None
+        self.phase2_canvas: Optional[FigureCanvasTkAgg] = None
+        self.phase2_toolbar: Optional[NavigationToolbar2Tk] = None
+        self.phase2_figure: Optional[Figure] = None
+        self.phase2_auto_y_var: Optional[tk.BooleanVar] = None
+        self.phase2_status_var: Optional[tk.StringVar] = None
         self.res_button: Optional[tk.Button] = None
         self.res_window: Optional[tk.Toplevel] = None
         self.res_canvas: Optional[FigureCanvasTkAgg] = None
@@ -210,8 +237,6 @@ class DataAnalysisGUI(
             left, text="Generate Synthetic Data", width=24, command=self.open_synthetic_generator_window
         )
         self.synth_button.pack(anchor="w", pady=2)
-        self.save_button = tk.Button(left, text="Save Dataset", width=24, command=self.save_dataset)
-        self.save_button.pack(anchor="w", pady=2)
         tk.Button(
             left, text="Load Different Dataset", width=24, command=self.load_different_dataset
         ).pack(anchor="w", pady=2)
@@ -227,6 +252,14 @@ class DataAnalysisGUI(
         tk.Button(
             left, text="Plot Selected VNA Scans", width=24, command=self.plot_selected_vna_scans
         ).pack(anchor="w", pady=2)
+        self.unwrap_button = tk.Button(
+            left, text="Phase Correction", width=24, command=self.open_unwrap_phase_window
+        )
+        self.unwrap_button.pack(anchor="w", pady=2)
+        self.phase2_button = tk.Button(
+            left, text="Phase Correction 2", width=24, command=self.open_second_phase_correction_window
+        )
+        self.phase2_button.pack(anchor="w", pady=2)
         tk.Button(
             left, text="Baseline Filtering", width=24, command=self.open_baseline_filter_window
         ).pack(anchor="w", pady=2)
@@ -352,6 +385,8 @@ class DataAnalysisGUI(
         self._update_norm_button_state()
         self._update_gauss_button_state()
         self._update_dsdf_button_state()
+        self._update_unwrap_button_state()
+        self._update_phase2_button_state()
         self._update_res_button_state()
 
     def _has_data_to_save(self) -> bool:
@@ -366,27 +401,34 @@ class DataAnalysisGUI(
         self._update_save_button_state()
 
     def _update_save_button_state(self) -> None:
-        if self.save_button is None:
-            return
-        if not self._has_data_to_save():
-            self.save_button.configure(
-                text="Save Dataset (No Data)",
-                bg="light grey",
-                activebackground="light grey",
+        return
+
+    def _persist_dataset(self) -> bool:
+        try:
+            if not self.dataset.created_at:
+                self.dataset.created_at = datetime.now().isoformat(timespec="seconds")
+            if self.dataset.dataset_name:
+                self.dataset_path = _dataset_pickle_path(self.dataset).resolve()
+            else:
+                self.dataset_path = self.dataset_path.resolve()
+
+            self.dataset.processing_history.append(
+                _make_event("save_dataset", {"dataset_path": str(self.dataset_path)})
             )
-            return
-        if self._dirty:
-            self.save_button.configure(
-                text="Save Dataset (Unsaved)",
-                bg="pink",
-                activebackground="pink",
-            )
-            return
-        self.save_button.configure(
-            text="Save Dataset (Up To Date)",
-            bg="light green",
-            activebackground="light green",
-        )
+            _save_dataset(self.dataset, self.dataset_path)
+            _write_app_state(self.dataset_path)
+            self._mark_clean()
+            self._refresh_status()
+            return True
+        except Exception as exc:
+            self._mark_dirty()
+            self._refresh_status()
+            self._log(f"Save failed: {exc}")
+            messagebox.showerror("Save failed", str(exc))
+            return False
+
+    def _autosave_dataset(self) -> bool:
+        return self._persist_dataset()
 
     def start_new_dataset(self) -> None:
         if self.dataset.vna_scans or self._dirty:
@@ -397,6 +439,18 @@ class DataAnalysisGUI(
             if not ok:
                 return
 
+        proposed_name = simpledialog.askstring(
+            "New Dataset Prefix",
+            "Enter the prefix to use for the new dataset folder and pickle filename:",
+            parent=self.root,
+        )
+        if proposed_name is None:
+            return
+        cleaned_name = _safe_name(proposed_name)
+        if not cleaned_name:
+            messagebox.showwarning("Invalid prefix", "Please enter a non-empty dataset prefix.")
+            return
+
         for closer in (
             getattr(self, "_synth_close", None),
             getattr(self, "_close_baseline_window", None),
@@ -404,18 +458,26 @@ class DataAnalysisGUI(
             getattr(self, "_norm_close", None),
             getattr(self, "_gauss_close", None),
             getattr(self, "_dsdf_close", None),
+            getattr(self, "_unwrap_close", None),
+            getattr(self, "_phase2_close", None),
             getattr(self, "_res_close", None),
         ):
             if callable(closer):
                 closer()
 
-        self.dataset = Dataset(source_file=str(DEFAULT_DATASET_FILE.resolve()))
-        self.dataset_path = DEFAULT_DATASET_FILE.resolve()
+        created_at = datetime.now().isoformat(timespec="seconds")
+        self.dataset = Dataset(
+            source_file=str(DEFAULT_DATASET_FILE.resolve()),
+            dataset_name=cleaned_name,
+            created_at=created_at,
+        )
+        self.dataset_path = _dataset_pickle_path(self.dataset).resolve()
+        self.dataset.source_file = str(self.dataset_path)
         _write_app_state(self.dataset_path)
         self._reload_transcript_ui()
         self._mark_clean()
         self._refresh_status()
-        self._log("Started new empty dataset.")
+        self._log(f"Started new empty dataset: {cleaned_name}")
 
     def _selected_scans_have_attached_filter(self) -> bool:
         scans = self._selected_scans()
@@ -425,11 +487,10 @@ class DataAnalysisGUI(
             bf = scan.baseline_filter
             if not isinstance(bf, dict):
                 return False
-            fd = bf.get("filtered_data")
-            if fd is None:
+            fd = np.asarray(bf.get("filtered_data_complex"))
+            if fd.ndim != 2 or fd.shape[0] != 2:
                 return False
-            arr = np.asarray(fd)
-            if arr.ndim != 2 or arr.shape[0] < 3 or arr.shape[1] == 0:
+            if fd.shape[1] == 0:
                 return False
         return True
 
@@ -456,13 +517,12 @@ class DataAnalysisGUI(
             interp = bf.get("interp_smooth")
             if not isinstance(interp, dict):
                 return False
-            interp_amp = np.asarray(interp.get("interp_amp"))
-            interp_phase = np.asarray(interp.get("interp_phase_deg_unwrapped"))
-            if interp_amp.ndim != 1 or interp_phase.ndim != 1:
+            interp_complex = np.asarray(interp.get("interp_complex"))
+            if interp_complex.ndim != 1:
                 return False
-            if interp_amp.size == 0 or interp_phase.size == 0:
+            if interp_complex.size == 0:
                 return False
-            if interp_amp.size != scan.freq.size or interp_phase.size != scan.freq.size:
+            if interp_complex.size != scan.freq.size:
                 return False
         return True
 
@@ -489,11 +549,10 @@ class DataAnalysisGUI(
             norm = bf.get("normalized")
             if not isinstance(norm, dict):
                 return False
-            norm_amp = np.asarray(norm.get("norm_amp"))
-            norm_phase = np.asarray(norm.get("norm_phase_deg_unwrapped"))
-            if norm_amp.ndim != 1 or norm_phase.ndim != 1:
+            norm_complex = np.asarray(norm.get("norm_complex"))
+            if norm_complex.ndim != 1:
                 return False
-            if norm_amp.size != scan.freq.size or norm_phase.size != scan.freq.size:
+            if norm_complex.size != scan.freq.size:
                 return False
         return True
 
@@ -533,43 +592,53 @@ class DataAnalysisGUI(
                 state="disabled", bg="light grey", activebackground="light grey"
             )
 
-    def save_dataset(self) -> None:
-        try:
-            if not self._has_data_to_save():
-                self._log("Save skipped: no data to save.")
-                self._update_save_button_state()
-                return
-            if not self.dataset.dataset_name:
-                proposed_name = simpledialog.askstring(
-                    "Name dataset",
-                    "Enter a dataset name:",
-                    parent=self.root,
-                )
-                if proposed_name is None:
-                    return
-                cleaned_name = _safe_name(proposed_name)
-                if not cleaned_name:
-                    messagebox.showwarning("Invalid name", "Please enter a non-empty dataset name.")
-                    return
-                self.dataset.dataset_name = cleaned_name
-                if not self.dataset.created_at:
-                    self.dataset.created_at = datetime.now().isoformat(timespec="seconds")
+    def _update_unwrap_button_state(self) -> None:
+        if self.unwrap_button is None:
+            return
+        if len(self._selected_scans()) > 0:
+            self.unwrap_button.configure(
+                state="normal", bg="light green", activebackground="light green"
+            )
+        else:
+            self.unwrap_button.configure(
+                state="disabled", bg="light grey", activebackground="light grey"
+            )
 
+    def _update_phase2_button_state(self) -> None:
+        if self.phase2_button is None:
+            return
+        scans = self._selected_scans()
+        if scans and all(scan.has_dewrapped_phase() for scan in scans):
+            self.phase2_button.configure(
+                state="normal", bg="light green", activebackground="light green"
+            )
+        else:
+            self.phase2_button.configure(
+                state="disabled", bg="light grey", activebackground="light grey"
+            )
+
+    def save_dataset(self) -> None:
+        if not self._has_data_to_save():
+            self._log("Save skipped: no data to save.")
+            self._update_save_button_state()
+            return
+        if not self.dataset.dataset_name:
+            proposed_name = simpledialog.askstring(
+                "Name dataset",
+                "Enter a dataset name:",
+                parent=self.root,
+            )
+            if proposed_name is None:
+                return
+            cleaned_name = _safe_name(proposed_name)
+            if not cleaned_name:
+                messagebox.showwarning("Invalid name", "Please enter a non-empty dataset name.")
+                return
+            self.dataset.dataset_name = cleaned_name
             if not self.dataset.created_at:
                 self.dataset.created_at = datetime.now().isoformat(timespec="seconds")
 
-            self.dataset_path = _dataset_pickle_path(self.dataset).resolve()
-            self.dataset.processing_history.append(
-                _make_event("save_dataset", {"dataset_path": str(self.dataset_path)})
-            )
-            _save_dataset(self.dataset, self.dataset_path)
-            _write_app_state(self.dataset_path)
-            self._mark_clean()
-            self._refresh_status()
-            self._log(f"Dataset saved: {self.dataset_path}")
-        except Exception as exc:
-            self._log(f"Save failed: {exc}")
-            messagebox.showerror("Save failed", str(exc))
+        self._persist_dataset()
 
     def load_different_dataset(self) -> None:
         path_text = filedialog.askopenfilename(
@@ -623,11 +692,13 @@ class DataAnalysisGUI(
 
         self._refresh_status()
         self._log(f"VNA load result: added={added_count}, failed={len(failed)}")
+        if added_count > 0:
+            self._autosave_dataset()
 
         if added_count > 0 and not failed:
             messagebox.showinfo(
                 "VNA scans loaded",
-                f"Added {added_count} scan(s).\n\nClick 'Save Dataset' to persist changes.",
+                f"Added {added_count} scan(s). Dataset saved automatically.",
             )
             return
 
@@ -703,6 +774,7 @@ class DataAnalysisGUI(
             self._mark_dirty()
             self._refresh_status()
             self._log(f"Removed {len(removed)} VNA scan(s) from dataset.")
+            self._autosave_dataset()
             selector.destroy()
 
         btns = tk.Frame(selector)

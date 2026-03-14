@@ -116,22 +116,22 @@ def _load_vna_npy(path: Path) -> VNAScan:
     # - column format: (N, 3) cols = [freq, real, imag]
     # - complex row:   (2, N) rows = [freq, complex_s21]
     # - complex col:   (N, 2) cols = [freq, complex_s21]
-    if arr.shape[0] >= 3 and arr.shape[1] >= 3:
-        freq = arr[0, :]
-        s21_real = arr[1, :]
-        s21_imag = arr[2, :]
-    elif arr.shape[1] >= 3 and arr.shape[0] >= 3:
+    if arr.shape[1] == 3:
         freq = arr[:, 0]
         s21_real = arr[:, 1]
         s21_imag = arr[:, 2]
-    elif arr.shape[0] == 2:
-        freq = np.real(arr[0, :])
-        s21_complex = arr[1, :]
-        s21_real = np.real(s21_complex)
-        s21_imag = np.imag(s21_complex)
+    elif arr.shape[0] == 3:
+        freq = arr[0, :]
+        s21_real = arr[1, :]
+        s21_imag = arr[2, :]
     elif arr.shape[1] == 2:
         freq = np.real(arr[:, 0])
         s21_complex = arr[:, 1]
+        s21_real = np.real(s21_complex)
+        s21_imag = np.imag(s21_complex)
+    elif arr.shape[0] == 2:
+        freq = np.real(arr[0, :])
+        s21_complex = arr[1, :]
         s21_real = np.real(s21_complex)
         s21_imag = np.imag(s21_complex)
     else:
@@ -150,16 +150,14 @@ def _load_vna_npy(path: Path) -> VNAScan:
         raise ValueError("VNA data must contain at least 3 points.")
 
     s21_complex = s21_real + 1j * s21_imag
-    s21_amp = np.abs(s21_complex)
-    s21_phase_deg_unwrapped = np.degrees(np.unwrap(np.angle(s21_complex)))
     loaded_at = datetime.now().isoformat(timespec="seconds")
     scan = VNAScan(
         filename=str(path.resolve()),
         source_dir=str(path.resolve().parent),
         loaded_at=loaded_at,
         freq=freq,
-        s21_amp=s21_amp,
-        s21_phase_deg_unwrapped=s21_phase_deg_unwrapped,
+        s21_complex_raw=s21_complex,
+        s21_phase_deg_unwrapped=None,
     )
     scan.processing_history.append(
         _make_event(

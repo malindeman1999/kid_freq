@@ -13,21 +13,32 @@ class VNAScan:
     filename: str
     loaded_at: str
     freq: np.ndarray
-    s21_amp: np.ndarray
-    s21_phase_deg_unwrapped: np.ndarray
+    s21_complex_raw: np.ndarray
+    s21_phase_deg_unwrapped: Optional[np.ndarray] = None
     source_dir: str = ""
     baseline_filter: Dict[str, object] = field(default_factory=dict)
     candidate_resonators: Dict[str, object] = field(default_factory=dict)
     processing_history: List[Dict[str, object]] = field(default_factory=list)
 
     def amplitude(self) -> np.ndarray:
-        return self.s21_amp
+        return np.abs(self.s21_complex_raw)
+
+    def phase_deg_wrapped_raw(self) -> np.ndarray:
+        return np.degrees(np.angle(self.s21_complex_raw))
+
+    def has_dewrapped_phase(self) -> bool:
+        if self.s21_phase_deg_unwrapped is None:
+            return False
+        phase = np.asarray(self.s21_phase_deg_unwrapped, dtype=float)
+        return phase.shape == self.freq.shape
 
     def phase_deg_unwrapped(self) -> np.ndarray:
-        return self.s21_phase_deg_unwrapped
+        if not self.has_dewrapped_phase():
+            raise ValueError("Dewrapped phase is not attached for this scan.")
+        return np.asarray(self.s21_phase_deg_unwrapped, dtype=float)
 
     def complex_s21(self) -> np.ndarray:
-        return self.s21_amp * np.exp(1j * np.radians(self.s21_phase_deg_unwrapped))
+        return np.asarray(self.s21_complex_raw, dtype=np.complex128)
 
 
 @dataclass

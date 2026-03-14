@@ -44,6 +44,7 @@ class AnalysisSelectorPlotMixin:
             self._mark_dirty()
             self._refresh_status()
             self._log(f"Analysis scan selection updated: {len(indices)} selected.")
+            self._autosave_dataset()
             selector.destroy()
 
         button_frame = tk.Frame(selector)
@@ -74,7 +75,12 @@ class AnalysisSelectorPlotMixin:
 
         for row, scan in enumerate(scans):
             amp = scan.amplitude()
-            phase = scan.phase_deg_unwrapped()
+            if scan.has_dewrapped_phase():
+                phase = scan.phase_deg_unwrapped()
+                phase_label = "Phase (dewrapped, deg)"
+            else:
+                phase = scan.phase_deg_wrapped_raw()
+                phase_label = "Phase (raw wrapped, deg)"
             phase_min = np.min(phase)
             phase_max = np.max(phase)
             phase_span = phase_max - phase_min
@@ -88,7 +94,7 @@ class AnalysisSelectorPlotMixin:
             ax_amp.set_title(Path(scan.filename).name, fontsize=10)
 
             ax_phase.plot(scan.freq, phase, color="tab:red")
-            ax_phase.set_ylabel("Phase (deg)")
+            ax_phase.set_ylabel(phase_label)
             ax_phase.set_ylim(phase_min - phase_pad, phase_max + phase_pad)
             ax_phase.grid(True, alpha=0.3)
 
@@ -111,5 +117,6 @@ class AnalysisSelectorPlotMixin:
         )
         self._mark_dirty()
         self._log(f"Plotted {n} selected scan(s). PDF saved: {pdf_path}")
+        self._autosave_dataset()
 
         plt.show()

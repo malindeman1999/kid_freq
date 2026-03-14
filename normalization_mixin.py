@@ -18,6 +18,8 @@ class NormalizationMixin:
         if not self._selected_scans_have_attached_interp_data():
             messagebox.showwarning(
                 "Missing interp data",
+                "Run pipeline in order:\n"
+                "Phase Correction -> Baseline Filtering -> Interp+Smooth -> Normalize Baseline.\n\n"
                 "All selected scans must have attached interpolation data first.",
             )
             return
@@ -73,28 +75,29 @@ class NormalizationMixin:
         self.norm_preview = {}
         for scan in scans:
             interp = scan.baseline_filter.get("interp_smooth", {})
-            interp_amp = np.asarray(interp.get("interp_amp"), dtype=float)
-            interp_phase = np.asarray(interp.get("interp_phase_deg_unwrapped"), dtype=float)
-            if interp_amp.size != scan.s21_amp.size or interp_phase.size != scan.s21_amp.size:
+            interp_complex = np.asarray(interp.get("interp_complex"), dtype=np.complex128)
+            if interp_complex.shape != scan.freq.shape:
                 continue
 
-            raw_complex = scan.s21_amp * np.exp(1j * np.radians(scan.s21_phase_deg_unwrapped))
-            interp_complex = interp_amp * np.exp(1j * np.radians(interp_phase))
+            phase2 = scan.candidate_resonators.get("phase_correction_2", {})
+            corrected_complex = np.asarray(phase2.get("corrected_complex"), dtype=np.complex128)
+            if corrected_complex.shape != scan.freq.shape:
+                continue
 
             with np.errstate(divide="ignore", invalid="ignore"):
                 normalized = np.divide(
-                    raw_complex,
+                    corrected_complex,
                     interp_complex,
-                    out=np.full(raw_complex.shape, np.nan + 1j * np.nan, dtype=np.complex128),
+                    out=np.full(corrected_complex.shape, np.nan + 1j * np.nan, dtype=np.complex128),
                     where=np.abs(interp_complex) > 0,
                 )
 
             norm_amp = np.abs(normalized)
             norm_phase = np.degrees(np.unwrap(np.angle(normalized)))
             self.norm_preview[self._scan_key(scan)] = {
+                "norm_complex": normalized,
                 "norm_amp": norm_amp,
                 "norm_phase_deg_unwrapped": norm_phase,
-                "norm_complex": normalized,
             }
 
     def _norm_render(self) -> None:
@@ -165,17 +168,15 @@ class NormalizationMixin:
             scan.baseline_filter["normalized"] = {
                 "attached_at": attached_at,
                 "attached_by": _current_user(),
-                "source": "raw_complex / interp_complex",
-                "norm_amp": prev["norm_amp"],
-                "norm_phase_deg_unwrapped": prev["norm_phase_deg_unwrapped"],
+                "source": "phase2_complex / interp_complex",
                 "norm_complex": prev["norm_complex"],
-                "normalized_data": np.vstack((scan.freq, prev["norm_amp"], prev["norm_phase_deg_unwrapped"])),
-                "normalized_data_format": "(3, N) rows = [freq, norm_amp, norm_phase_deg_unwrapped]",
+                "normalized_data_complex": np.vstack((scan.freq, prev["norm_complex"])),
+                "normalized_data_complex_format": "(2, N) rows = [freq, norm_complex]",
             }
             scan.processing_history.append(
                 _make_event(
                     "attach_normalized_baseline",
-                    {"source": "raw_complex / interp_complex", "points": int(scan.freq.size)},
+                    {"source": "phase2_complex / interp_complex", "points": int(scan.freq.size)},
                 )
             )
             count += 1
@@ -193,6 +194,7 @@ class NormalizationMixin:
         self._log(
             f"Attached normalized baseline data to {count} selected scan(s); overwrote {overwritten} prior attachment(s)."
         )
+        self._autosave_dataset()
 
     def _norm_close(self) -> None:
         if self.norm_window is not None and self.norm_window.winfo_exists():
