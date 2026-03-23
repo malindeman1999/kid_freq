@@ -43,6 +43,8 @@ def process_phase_data(
     max_passes=3,
     min_separation_hz=15e3,
     p_random_cutoff=1e-3,
+    correct_congruent=True,
+    correct_non_congruent=False,
     verbose=False,
 ):
     freq = np.asarray(freq, dtype=float).ravel()
@@ -96,11 +98,18 @@ def process_phase_data(
 
     phase_diff_original = np.diff(phase)
     phase_diff_corrected = np.diff(phase_corrected)
-    non_congruent_idx_arr = _nearest_indices(non_congruent_freqs, freq)
-    non_congruent_diff_idx = non_congruent_idx_arr - 1
-    non_congruent_diff_idx = non_congruent_diff_idx[non_congruent_diff_idx >= 0]
-    phase_diff_corrected[non_congruent_diff_idx] = phase_diff_original[non_congruent_diff_idx]
-    phase_corrected[1:] = phase_corrected[0] + np.cumsum(phase_diff_corrected)
+    if not bool(correct_congruent):
+        congruent_idx_arr = _nearest_indices(congruent_freqs, freq)
+        congruent_diff_idx = congruent_idx_arr - 1
+        congruent_diff_idx = congruent_diff_idx[congruent_diff_idx >= 0]
+        phase_diff_corrected[congruent_diff_idx] = phase_diff_original[congruent_diff_idx]
+    if not bool(correct_non_congruent):
+        non_congruent_idx_arr = _nearest_indices(non_congruent_freqs, freq)
+        non_congruent_diff_idx = non_congruent_idx_arr - 1
+        non_congruent_diff_idx = non_congruent_diff_idx[non_congruent_diff_idx >= 0]
+        phase_diff_corrected[non_congruent_diff_idx] = phase_diff_original[non_congruent_diff_idx]
+    if (not bool(correct_congruent)) or (not bool(correct_non_congruent)):
+        phase_corrected[1:] = phase_corrected[0] + np.cumsum(phase_diff_corrected)
 
     return {
         "real": real,
@@ -120,11 +129,15 @@ def process_phase_data(
         ),
         "correction_irregular_freqs": correction_irregular_freqs,
         "congruent_freqs": np.asarray(congruent_freqs, dtype=float),
+        "congruent_phases": _nearest_phase_values(congruent_freqs, freq, phase_corrected),
         "congruent_phases_mod360": np.mod(
             _nearest_phase_values(congruent_freqs, freq, phase_corrected), 360.0
         ),
         "non_congruent_freqs": np.asarray(non_congruent_freqs, dtype=float),
+        "non_congruent_phases": _nearest_phase_values(non_congruent_freqs, freq, phase_corrected),
         "non_congruent_phases_mod360": np.mod(
             _nearest_phase_values(non_congruent_freqs, freq, phase_corrected), 360.0
         ),
+        "correct_congruent": bool(correct_congruent),
+        "correct_non_congruent": bool(correct_non_congruent),
     }

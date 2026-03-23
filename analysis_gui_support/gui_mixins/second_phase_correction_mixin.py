@@ -9,7 +9,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 from tkinter import messagebox
 
-from analysis_models import _current_user, _make_event
+from ..analysis_models import _current_user, _make_event
 
 DEFAULT_PHASE2_THRESHOLD_DEG = 100.0
 
@@ -90,7 +90,7 @@ class SecondPhaseCorrectionMixin:
             return
 
         self.phase2_window = tk.Toplevel(self.root)
-        self.phase2_window.title("Phase Correction 2")
+        self.phase2_window.title("Phase Correction 3")
         self.phase2_window.geometry("1280x900")
         self.phase2_window.protocol("WM_DELETE_WINDOW", self._phase2_close)
 
@@ -121,7 +121,7 @@ class SecondPhaseCorrectionMixin:
         ).pack(side="left", padx=(0, 12))
 
         self.phase2_status_var = tk.StringVar(
-            value="Adjust threshold and release slider to update. Attach to save corrected complex output."
+            value="Adjust threshold and release slider to update. Attach to save corrected amplitude+phase output."
         )
         tk.Label(controls, textvariable=self.phase2_status_var, anchor="w").pack(
             side="left", fill="x", expand=True
@@ -129,11 +129,16 @@ class SecondPhaseCorrectionMixin:
 
         actions = tk.Frame(self.phase2_window, padx=8, pady=6)
         actions.pack(side="top", fill="x")
-        tk.Button(actions, text="Close", width=12, command=self._phase2_close).pack(side="right")
+        tk.Button(actions, text="Cancel", width=12, command=self._phase2_close).pack(side="right")
         tk.Button(actions, text="Reset View", width=12, command=self._phase2_reset_view).pack(
             side="right", padx=(8, 0)
         )
-        self.phase2_attach_button = tk.Button(actions, text="Attach", width=12, command=self._phase2_attach)
+        self.phase2_attach_button = tk.Button(
+            actions,
+            text="Attach, Save, and Close",
+            width=24,
+            command=self._attach_save_and_close_phase2,
+        )
         self.phase2_attach_button.pack(side="right", padx=(8, 0))
         self._phase2_set_attach_state(attached=False)
 
@@ -180,13 +185,12 @@ class SecondPhaseCorrectionMixin:
                 phase_in = np.asarray(scan.phase_deg_unwrapped(), dtype=float)
                 corrected = _simple_phase2_correction(phase_in, threshold_deg)
                 phase_out = corrected["phase_out"]
-                corrected_complex = scan.amplitude() * np.exp(1j * np.radians(phase_out))
                 self.phase2_preview[self._scan_key(scan)] = {
+                    "corrected_amp": np.asarray(scan.amplitude(), dtype=float),
                     "phase_in": corrected["phase_in"],
                     "phase_out": phase_out,
                     "phase_out_mod360": corrected["phase_out_mod360"],
                     "corrected_idx": corrected["corrected_idx"],
-                    "corrected_complex": corrected_complex,
                     "threshold_deg": threshold_deg,
                 }
             except Exception as exc:
@@ -203,7 +207,7 @@ class SecondPhaseCorrectionMixin:
             else:
                 self.phase2_status_var.set(f"Preview updated for {ok_count} scan(s).")
         if failed:
-            messagebox.showwarning("Phase Correction 2 preview", "\n".join(failed[:10]))
+            messagebox.showwarning("Phase Correction 3 preview", "\n".join(failed[:10]))
 
     def _phase2_on_auto_y_toggled(self) -> None:
         if self.phase2_auto_y_var is not None and bool(self.phase2_auto_y_var.get()):
@@ -266,18 +270,19 @@ class SecondPhaseCorrectionMixin:
 
         axes = np.atleast_1d(self.phase2_figure.subplots(len(scans), 1, sharex=False))
         for i, scan in enumerate(scans):
+            freq_ghz = np.asarray(scan.freq, dtype=float) / 1.0e9
             ax = axes[i]
             prev = self.phase2_preview.get(self._scan_key(scan))
             if prev is None:
                 ax.text(0.5, 0.5, "No preview", ha="center", va="center")
                 ax.axis("off")
                 continue
-            ax.plot(scan.freq, prev["phase_in"], color="0.75", linewidth=0.8, label="Input phase (step 1)")
-            ax.plot(scan.freq, prev["phase_out"], color="tab:blue", linewidth=1.0, label="Corrected phase (step 2)")
+            ax.plot(freq_ghz, prev["phase_in"], color="0.75", linewidth=0.8, label="Input phase (step 1)")
+            ax.plot(freq_ghz, prev["phase_out"], color="tab:blue", linewidth=1.0, label="Corrected phase (step 2)")
             idx = np.asarray(prev["corrected_idx"], dtype=int)
             if idx.size > 0:
                 ax.scatter(
-                    scan.freq[idx],
+                    freq_ghz[idx],
                     prev["phase_out"][idx],
                     s=14,
                     color="tab:red",
@@ -290,7 +295,7 @@ class SecondPhaseCorrectionMixin:
             if i == 0:
                 ax.legend(loc="upper right", fontsize=8)
             if i == len(scans) - 1:
-                ax.set_xlabel("Frequency")
+                ax.set_xlabel("Frequency (GHz)")
 
         if len(saved) == len(axes):
             for ax, (xlim, ylim) in zip(axes, saved):
@@ -306,7 +311,7 @@ class SecondPhaseCorrectionMixin:
 
         th = float(self.phase2_threshold_slider.get()) if self.phase2_threshold_slider is not None else 0.0
         self.phase2_figure.suptitle(
-            f"Phase Correction 2 | threshold={th:.1f} deg | simple diff correction",
+            f"Phase Correction 3 | threshold={th:.1f} deg | simple diff correction",
             fontsize=11,
         )
         self.phase2_figure.tight_layout()
@@ -326,10 +331,16 @@ class SecondPhaseCorrectionMixin:
                 "attached_at": attached_at,
                 "attached_by": _current_user(),
                 "threshold_deg": float(prev["threshold_deg"]),
+                "corrected_amp": np.asarray(prev["corrected_amp"], dtype=float),
                 "corrected_phase_deg": np.asarray(prev["phase_out"], dtype=float),
-                "corrected_complex": np.asarray(prev["corrected_complex"], dtype=np.complex128),
-                "data_complex": np.vstack((scan.freq, np.asarray(prev["corrected_complex"], dtype=np.complex128))),
-                "data_complex_format": "(2, N) rows = [freq, corrected_complex_s21]",
+                "data_polar": np.vstack(
+                    (
+                        scan.freq,
+                        np.asarray(prev["corrected_amp"], dtype=float),
+                        np.asarray(prev["phase_out"], dtype=float),
+                    )
+                ),
+                "data_polar_format": "(3, N) rows = [freq, amplitude, unwrapped_phase_deg]",
             }
             scan.processing_history.append(
                 _make_event(

@@ -9,7 +9,11 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 from tkinter import filedialog, messagebox
 
-from ComplexResonance import ComplexResonanceDirect
+from resonator.ComplexResonance import ComplexResonanceQi
+
+SYNTHETIC_VNA_OUTPUT_DIR = Path(
+    r"C:\Users\lindeman\OneDrive - JPL\Documents\PRIMA-related\PRIMA SUBPROJECTS\RELATIVE CHANGES IN RESONANCES\VNA data\synthetic_vna"
+)
 
 
 def _load_frequency_grid(path: Path) -> np.ndarray:
@@ -28,10 +32,6 @@ def _load_frequency_grid(path: Path) -> np.ndarray:
     if not np.all(np.isfinite(freq)):
         raise ValueError("Frequency grid contains non-finite values.")
     return freq
-
-
-def _loaded_q(qi: float, qcom: complex) -> float:
-    return 1.0 / (1.0 / qi + np.real(1.0 / qcom))
 
 
 class SyntheticGeneratorMixin:
@@ -288,8 +288,7 @@ class SyntheticGeneratorMixin:
             for j, fr in enumerate(frs):
                 phi_deg = 6.0 + 2.5 * (j % 5)
                 qcom_eff = qc_mag * np.exp(-1j * np.deg2rad(phi_deg))
-                q_loaded = _loaded_q(qi, qcom_eff)
-                s21 *= ComplexResonanceDirect(freq, fr, q_loaded, qcom_eff, 1.0 + 0j, 0.0)
+                s21 *= ComplexResonanceQi(freq, fr, qi, qcom_eff, 1.0 + 0j, 0.0)
 
             a = 0.97 * np.exp(1j * np.deg2rad(9.0))
             tau = 30e-9
@@ -326,14 +325,14 @@ class SyntheticGeneratorMixin:
             return
 
         for i, arr in enumerate(self.synth_preview_files):
-            freq = arr[0, :]
+            freq = np.asarray(arr[0, :], dtype=float) / 1.0e9
             z = arr[1, :] + 1j * arr[2, :]
             amp = np.abs(z)
             ax1.plot(freq, amp, linewidth=1.0, label=f"File {i+1}")
             if i == 0:
                 ax2.plot(np.real(z), np.imag(z), linewidth=1.0, label=f"File {i+1}")
         ax1.set_title("Amplitude Preview")
-        ax1.set_xlabel("Frequency")
+        ax1.set_xlabel("Frequency (GHz)")
         ax1.set_ylabel("|S21|")
         ax1.grid(True, alpha=0.3)
         ax1.legend(loc="best", fontsize=8)
@@ -358,14 +357,7 @@ class SyntheticGeneratorMixin:
             return
         if not self.synth_preview_files:
             self.synth_preview_files = self._synth_build_preview_data()
-        out_dir_text = filedialog.askdirectory(
-            title="Select output folder for synthetic files",
-            initialdir=str((Path(__file__).resolve().parent / "synthetic data").resolve()),
-            mustexist=False,
-        )
-        if not out_dir_text:
-            return
-        out_dir = Path(out_dir_text).resolve()
+        out_dir = SYNTHETIC_VNA_OUTPUT_DIR.resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")

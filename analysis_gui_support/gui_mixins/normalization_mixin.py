@@ -10,7 +10,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 from tkinter import messagebox
 
-from analysis_models import _current_user, _make_event
+from ..analysis_models import _current_user, _make_event, _read_polar_series
 
 
 class NormalizationMixin:
@@ -45,8 +45,13 @@ class NormalizationMixin:
 
         action_frame = tk.Frame(self.norm_window, padx=8, pady=6)
         action_frame.pack(side="top", fill="x")
-        tk.Button(action_frame, text="Close", width=12, command=self._norm_close).pack(side="right")
-        self.norm_attach_button = tk.Button(action_frame, text="Attach", width=12, command=self._norm_attach)
+        tk.Button(action_frame, text="Cancel", width=12, command=self._norm_close).pack(side="right")
+        self.norm_attach_button = tk.Button(
+            action_frame,
+            text="Attach, Save, and Close",
+            width=24,
+            command=self._attach_save_and_close_norm,
+        )
         self.norm_attach_button.pack(side="right", padx=(8, 0))
         self._norm_set_attach_state(attached=False)
 
@@ -75,27 +80,32 @@ class NormalizationMixin:
         self.norm_preview = {}
         for scan in scans:
             interp = scan.baseline_filter.get("interp_smooth", {})
-            interp_complex = np.asarray(interp.get("interp_complex"), dtype=np.complex128)
-            if interp_complex.shape != scan.freq.shape:
+            interp_amp, interp_phase = _read_polar_series(
+                interp,
+                amplitude_key="interp_amp",
+                phase_key="interp_phase",
+            )
+            if interp_amp.shape != scan.freq.shape or interp_phase.shape != scan.freq.shape:
                 continue
 
-            phase2 = scan.candidate_resonators.get("phase_correction_2", {})
-            corrected_complex = np.asarray(phase2.get("corrected_complex"), dtype=np.complex128)
-            if corrected_complex.shape != scan.freq.shape:
+            phase3 = scan.candidate_resonators.get("phase_correction_3", {})
+            corrected_amp, corrected_phase = _read_polar_series(
+                phase3,
+                amplitude_key="corrected_amp",
+                phase_key="corrected_phase_deg",
+            )
+            if corrected_amp.shape != scan.freq.shape or corrected_phase.shape != scan.freq.shape:
                 continue
 
             with np.errstate(divide="ignore", invalid="ignore"):
-                normalized = np.divide(
-                    corrected_complex,
-                    interp_complex,
-                    out=np.full(corrected_complex.shape, np.nan + 1j * np.nan, dtype=np.complex128),
-                    where=np.abs(interp_complex) > 0,
+                norm_amp = np.divide(
+                    corrected_amp,
+                    interp_amp,
+                    out=np.full(corrected_amp.shape, np.nan, dtype=float),
+                    where=np.abs(interp_amp) > 0,
                 )
-
-            norm_amp = np.abs(normalized)
-            norm_phase = np.degrees(np.unwrap(np.angle(normalized)))
+            norm_phase = corrected_phase - interp_phase
             self.norm_preview[self._scan_key(scan)] = {
-                "norm_complex": normalized,
                 "norm_amp": norm_amp,
                 "norm_phase_deg_unwrapped": norm_phase,
             }
@@ -115,6 +125,7 @@ class NormalizationMixin:
         axes = np.atleast_2d(axes)
 
         for i, scan in enumerate(scans):
+            freq_ghz = np.asarray(scan.freq, dtype=float) / 1.0e9
             ax_a = axes[i, 0]
             ax_p = axes[i, 1]
             prev = self.norm_preview.get(self._scan_key(scan))
@@ -125,9 +136,9 @@ class NormalizationMixin:
                 ax_p.set_axis_off()
                 continue
 
-            ax_a.plot(scan.freq, prev["norm_amp"], color="tab:blue", linewidth=1.0, label="|S21/interp|")
+            ax_a.plot(freq_ghz, prev["norm_amp"], color="tab:blue", linewidth=1.0, label="|S21/interp|")
             ax_p.plot(
-                scan.freq,
+                freq_ghz,
                 prev["norm_phase_deg_unwrapped"],
                 color="tab:orange",
                 linewidth=1.0,
@@ -142,8 +153,8 @@ class NormalizationMixin:
                 ax_a.legend(loc="upper right", fontsize=8)
                 ax_p.legend(loc="upper right", fontsize=8)
             if i == n - 1:
-                ax_a.set_xlabel("Frequency")
-                ax_p.set_xlabel("Frequency")
+                ax_a.set_xlabel("Frequency (GHz)")
+                ax_p.set_xlabel("Frequency (GHz)")
 
         self.norm_figure.suptitle("Baseline Normalization: S21 / Interpolated Baseline", fontsize=11)
         self.norm_figure.tight_layout()
@@ -168,15 +179,18 @@ class NormalizationMixin:
             scan.baseline_filter["normalized"] = {
                 "attached_at": attached_at,
                 "attached_by": _current_user(),
-                "source": "phase2_complex / interp_complex",
-                "norm_complex": prev["norm_complex"],
-                "normalized_data_complex": np.vstack((scan.freq, prev["norm_complex"])),
-                "normalized_data_complex_format": "(2, N) rows = [freq, norm_complex]",
+                "source": "phase2_polar / interp_polar",
+                "norm_amp": np.asarray(prev["norm_amp"], dtype=float),
+                "norm_phase_deg_unwrapped": np.asarray(prev["norm_phase_deg_unwrapped"], dtype=float),
+                "normalized_data_polar": np.vstack(
+                    (scan.freq, prev["norm_amp"], prev["norm_phase_deg_unwrapped"])
+                ),
+                "normalized_data_polar_format": "(3, N) rows = [freq, amplitude, unwrapped_phase_deg]",
             }
             scan.processing_history.append(
                 _make_event(
                     "attach_normalized_baseline",
-                    {"source": "phase2_complex / interp_complex", "points": int(scan.freq.size)},
+                    {"source": "phase2_polar / interp_polar", "points": int(scan.freq.size)},
                 )
             )
             count += 1

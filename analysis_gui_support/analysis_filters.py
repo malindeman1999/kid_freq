@@ -4,7 +4,7 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
-from analysis_models import VNAScan
+from .analysis_models import VNAScan
 
 
 def _window_width_in_freq_units(freq: np.ndarray, width_ghz: float) -> float:

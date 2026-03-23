@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import pickle
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 
-from analysis_models import Dataset, VNAScan, _make_event
+from . import analysis_models as _analysis_models
+from .analysis_models import Dataset, VNAScan, _complex_from_polar, _make_event
 
 
-APP_STATE_FILE = Path("analysis_gui_state.json")
-DATASETS_DIR = Path("data_sets")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+APP_STATE_FILE = Path(__file__).resolve().parent / "analysis_gui_state.json"
+DATASETS_DIR = PROJECT_ROOT / "data_sets"
 DEFAULT_DATASET_FILE = DATASETS_DIR / "analysis_dataset.pkl"
 
 
@@ -36,6 +39,7 @@ def _write_app_state(dataset_path: Path) -> None:
 
 def _load_dataset(dataset_path: Path) -> Dataset:
     if dataset_path.exists():
+        sys.modules.setdefault("analysis_models", _analysis_models)
         with dataset_path.open("rb") as f:
             data = pickle.load(f)
         if not isinstance(data, Dataset):
@@ -47,6 +51,12 @@ def _load_dataset(dataset_path: Path) -> Dataset:
 def _normalize_dataset(dataset: Dataset, dataset_path: Path) -> Dataset:
     # Development mode: assume current schema and avoid compatibility shims.
     dataset.source_file = str(dataset_path.resolve())
+    for scan in dataset.vna_scans:
+        if not hasattr(scan, "plot_group"):
+            scan.plot_group = None
+        if not hasattr(scan, "file_timestamp"):
+            scan.file_timestamp = ""
+    _backfill_missing_vna_file_timestamps(dataset)
 
     # Backfill metadata from filename if possible: YYYYMMDD_HHMMSS_name.pkl
     stem = dataset_path.stem
@@ -62,6 +72,34 @@ def _normalize_dataset(dataset: Dataset, dataset_path: Path) -> Dataset:
             dataset.dataset_name = match.group("name").replace("_", " ")
 
     return dataset
+
+
+def _backfill_missing_vna_file_timestamps(dataset: Dataset) -> int:
+    updated = 0
+    for scan in dataset.vna_scans:
+        if getattr(scan, "file_timestamp", ""):
+            continue
+        try:
+            path = Path(str(scan.filename)).resolve()
+        except Exception:
+            continue
+        if not path.exists():
+            continue
+        try:
+            scan.file_timestamp = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+        except Exception:
+            continue
+        scan.processing_history.append(
+            _make_event(
+                "backfill_vna_file_timestamp",
+                {
+                    "filename": scan.filename,
+                    "file_timestamp": scan.file_timestamp,
+                },
+            )
+        )
+        updated += 1
+    return updated
 
 
 def _safe_name(name: str) -> str:
@@ -151,10 +189,12 @@ def _load_vna_npy(path: Path) -> VNAScan:
 
     s21_complex = s21_real + 1j * s21_imag
     loaded_at = datetime.now().isoformat(timespec="seconds")
+    file_timestamp = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
     scan = VNAScan(
         filename=str(path.resolve()),
         source_dir=str(path.resolve().parent),
         loaded_at=loaded_at,
+        file_timestamp=file_timestamp,
         freq=freq,
         s21_complex_raw=s21_complex,
         s21_phase_deg_unwrapped=None,
@@ -166,7 +206,75 @@ def _load_vna_npy(path: Path) -> VNAScan:
                 "filename": scan.filename,
                 "source_dir": scan.source_dir,
                 "shape": list(arr.shape),
+                "file_timestamp": scan.file_timestamp,
             },
         )
     )
     return scan
+
+
+def _load_vna_text_db_phase0(path: Path) -> VNAScan:
+    try:
+        arr = np.loadtxt(path, dtype=float)
+    except Exception as exc:
+        raise ValueError(f"Could not parse text VNA data: {exc}") from exc
+
+    arr = np.asarray(arr, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 2:
+        raise ValueError(
+            "Expected 2-column text data [frequency_MHz, amplitude_dB], "
+            f"got shape {arr.shape}"
+        )
+
+    freq_hz = np.asarray(arr[:, 0], dtype=float) * 1.0e6
+    amp_db = np.asarray(arr[:, 1], dtype=float)
+    if freq_hz.size != amp_db.size:
+        raise ValueError("Frequency and amplitude arrays must have the same length.")
+    if freq_hz.size < 3:
+        raise ValueError("VNA data must contain at least 3 points.")
+
+    amp_linear = np.power(10.0, amp_db / 20.0)
+    phase_deg = np.zeros_like(amp_linear)
+    s21_complex = _complex_from_polar(amp_linear, phase_deg)
+
+    loaded_at = datetime.now().isoformat(timespec="seconds")
+    file_timestamp = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+    scan = VNAScan(
+        filename=str(path.resolve()),
+        source_dir=str(path.resolve().parent),
+        loaded_at=loaded_at,
+        file_timestamp=file_timestamp,
+        freq=freq_hz,
+        s21_complex_raw=s21_complex,
+        s21_phase_deg_unwrapped=None,
+    )
+    scan.processing_history.append(
+        _make_event(
+            "load_vna_text_db_phase0_assumed",
+            {
+                "filename": scan.filename,
+                "source_dir": scan.source_dir,
+                "shape": list(arr.shape),
+                "frequency_units_in": "MHz",
+                "frequency_units_stored": "Hz",
+                "amplitude_units_in": "dB",
+                "phase_assumed_deg": 0.0,
+                "assumed_file_type": "2-column text [frequency_MHz, amplitude_dB]",
+                "file_timestamp": scan.file_timestamp,
+            },
+        )
+    )
+    return scan
+
+
+def _load_vna_file(path: Path) -> tuple[VNAScan, str | None]:
+    suffix = path.suffix.lower()
+    if suffix == ".npy":
+        return _load_vna_npy(path), None
+    if suffix in {".txt", ".dat", ".csv"}:
+        warning = (
+            f"{path.name}: assumed 2-column text format [frequency in MHz, amplitude in dB]. "
+            "Converted frequency to Hz and set phase to 0 deg."
+        )
+        return _load_vna_text_db_phase0(path), warning
+    raise ValueError(f"Unsupported VNA file type: {path.suffix or '<no extension>'}")

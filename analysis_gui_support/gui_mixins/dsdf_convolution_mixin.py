@@ -9,8 +9,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 from tkinter import messagebox
 
-from analysis_filters import _estimate_frequency_resolution_mhz, _window_width_in_freq_units
-from analysis_models import _current_user, _make_event
+from ..analysis_filters import _estimate_frequency_resolution_mhz, _window_width_in_freq_units
+from ..analysis_models import _complex_from_polar, _current_user, _make_event, _read_polar_series
 
 _FWHM_TO_SIGMA = 1.0 / 2.3548200450309493
 
@@ -136,9 +136,9 @@ class DSDFConvolutionMixin:
 
         self.dsdf_threshold_slider = tk.Scale(
             controls,
-            from_=0.0,
+            from_=0.001,
             to=0.2,
-            resolution=0.01,
+            resolution=0.001,
             orient="horizontal",
             label="Threshold",
             command=lambda _v: self._dsdf_on_slider_changed(),
@@ -194,11 +194,16 @@ class DSDFConvolutionMixin:
 
         actions = tk.Frame(self.dsdf_window, padx=8, pady=6)
         actions.pack(side="top", fill="x")
-        tk.Button(actions, text="Close", width=12, command=self._dsdf_close).pack(side="right")
+        tk.Button(actions, text="Cancel", width=12, command=self._dsdf_close).pack(side="right")
         tk.Button(actions, text="Reset View", width=12, command=self._dsdf_reset_view).pack(
             side="right", padx=(8, 0)
         )
-        self.dsdf_attach_button = tk.Button(actions, text="Attach", width=12, command=self._dsdf_attach)
+        self.dsdf_attach_button = tk.Button(
+            actions,
+            text="Attach, Save, and Close",
+            width=24,
+            command=self._attach_save_and_close_dsdf,
+        )
         self.dsdf_attach_button.pack(side="right", padx=(8, 0))
         self._dsdf_set_attach_state(attached=False)
 
@@ -274,10 +279,14 @@ class DSDFConvolutionMixin:
             norm = scan.baseline_filter.get("normalized", {})
             if not isinstance(norm, dict):
                 continue
-            z = np.asarray(norm.get("norm_complex"), dtype=np.complex128)
-            if z.shape != scan.freq.shape:
+            amp, phase = _read_polar_series(
+                norm,
+                amplitude_key="norm_amp",
+                phase_key="norm_phase_deg_unwrapped",
+            )
+            if amp.shape != scan.freq.shape or phase.shape != scan.freq.shape:
                 continue
-            amp = np.abs(z)
+            z = _complex_from_polar(amp, phase)
             freq = np.asarray(scan.freq, dtype=float)
             order = np.argsort(freq)
             f_sorted = freq[order]
@@ -311,7 +320,7 @@ class DSDFConvolutionMixin:
 
             self.dsdf_preview[self._scan_key(scan)] = {
                 "context_amp_corr": np.asarray(amp, dtype=float),
-                "context_phase_corr_wrapped": np.angle(z),
+                "context_phase_corr": np.asarray(phase, dtype=float),
                 "raw_dmag_norm": dmag_norm,
                 "smooth_dmag_norm": smooth,
                 "fwhm_ghz": fwhm_ghz,
@@ -343,37 +352,38 @@ class DSDFConvolutionMixin:
                 ax.text(0.5, 0.5, "Missing normalized data", ha="center", va="center")
                 ax.axis("off")
                 continue
-            freq = scan.freq
+            freq = np.asarray(scan.freq, dtype=float)
+            freq_ghz = freq / 1.0e9
             raw = prev["raw_dmag_norm"]
             sm = prev["smooth_dmag_norm"]
             show_phase = bool(self.dsdf_show_phase_context_var.get()) if self.dsdf_show_phase_context_var is not None else False
             if show_phase:
-                ctx = prev["context_phase_corr_wrapped"]
-                ctx_label = "Corrected phase (wrapped, rad) context"
+                ctx = prev["context_phase_corr"]
+                ctx_label = "Normalized phase context"
             else:
                 ctx = prev["context_amp_corr"]
                 ctx_label = "Corrected |S21| context"
             ax.plot(
-                freq,
+                freq_ghz,
                 ctx,
                 color="0.85",
                 linewidth=1.0,
                 label=ctx_label,
                 zorder=0,
             )
-            ax.plot(freq, raw, color="0.5", linewidth=0.8, label="Raw |dS21/df| (norm)")
-            ax.plot(freq, sm, color="tab:blue", linestyle="--", linewidth=1.2, label="Smoothed (non-accepted)")
+            ax.plot(freq_ghz, raw, color="0.5", linewidth=0.8, label="Raw |dS21/df| (norm)")
+            ax.plot(freq_ghz, sm, color="tab:blue", linestyle="--", linewidth=1.2, label="Smoothed (non-accepted)")
             for r0, r1 in prev["accepted_regions"]:
                 ax.plot(
-                    freq[r0 : r1 + 1], sm[r0 : r1 + 1], color="tab:green", linewidth=1.5,
+                    freq_ghz[r0 : r1 + 1], sm[r0 : r1 + 1], color="tab:green", linewidth=1.5,
                     label="Accepted region" if (r0, r1) == prev["accepted_regions"][0] else None,
                 )
             idx = prev["maxima_idx"]
             if idx.size:
-                ax.plot(freq[idx], raw[idx], "o", color="tab:red", markersize=4, label="Region maxima (raw)")
-                ax.plot(freq[idx], sm[idx], "x", color="black", markersize=5, label="Region maxima (smooth)")
+                ax.plot(freq_ghz[idx], raw[idx], "o", color="tab:red", markersize=4, label="Region maxima (raw)")
+                ax.plot(freq_ghz[idx], sm[idx], "x", color="black", markersize=5, label="Region maxima (smooth)")
             if show_phase:
-                ax.set_ylabel("|dS21/df| (norm) + Phase context (rad)")
+                ax.set_ylabel("|dS21/df| (norm) + Phase context (deg)")
             else:
                 ax.set_ylabel("|dS21/df| (norm) + |S21| context")
             ax.grid(True, alpha=0.3)
@@ -381,7 +391,7 @@ class DSDFConvolutionMixin:
             if i == 0:
                 ax.legend(loc="upper right", fontsize=8)
             if i == n - 1:
-                ax.set_xlabel("Frequency")
+                ax.set_xlabel("Frequency (GHz)")
         fwhm_khz = float(self.dsdf_fwhm_slider.get()) if self.dsdf_fwhm_slider else 0.0
         th = float(self.dsdf_threshold_slider.get()) if self.dsdf_threshold_slider else 0.0
         w_khz = float(self.dsdf_min_region_slider.get()) if self.dsdf_min_region_slider else 0.0

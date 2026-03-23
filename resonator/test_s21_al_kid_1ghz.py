@@ -8,7 +8,7 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
-from ComplexResonance import ComplexResonanceDirect
+from resonator.ComplexResonance import ComplexResonance
 
 
 def main(show_plot=False):
@@ -35,7 +35,7 @@ def main(show_plot=False):
     npts = 4001
     f = np.linspace(fr - span / 2.0, fr + span / 2.0, npts)
 
-    s21 = ComplexResonanceDirect(f, fr, Q, Qcom, a, tau)
+    s21 = ComplexResonance(f, fr, Q, Qcom, a, tau)
 
     # Derived plotting quantities.
     mag_db = 20.0 * np.log10(np.abs(s21))

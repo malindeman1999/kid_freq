@@ -4,7 +4,7 @@ Generate synthetic 3-resonator VNA files on the frequency grid of a real scan.
 Workflow:
 1) Open file picker (starts in "VNA data" if present) and select a real .npy file.
 2) Read its frequency grid.
-3) Generate 3 synthetic scans with Al MKID-like parameters using ComplexResonanceDirect.
+3) Generate 3 synthetic scans with Al MKID-like parameters using ComplexResonance.
 4) Each subsequent synthetic scan shifts all resonance frequencies down by 0.1%.
 5) Save files in row format: [freq, real(S21), imag(S21)].
 """
@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox
 
 import numpy as np
 
-from ComplexResonance import ComplexResonanceDirect
+from resonator.ComplexResonance import ComplexResonance
 
 
 def _load_frequency_grid(path: Path) -> np.ndarray:
@@ -58,7 +58,7 @@ def _synthesize_scan(freq: np.ndarray, frs: np.ndarray, rng: np.random.Generator
         qcom = qcmag * np.exp(-1j * np.deg2rad(phdeg))
         q_loaded = _mk_loaded_q(qi, qcom)
         # Per-resonator contribution only; global baseline added after product.
-        s21 *= ComplexResonanceDirect(freq, fr, q_loaded, qcom, 1.0 + 0j, 0.0)
+        s21 *= ComplexResonance(freq, fr, q_loaded, qcom, 1.0 + 0j, 0.0)
 
     # Add realistic global gain/phase and cable delay.
     a = 0.97 * np.exp(1j * np.deg2rad(9.0))

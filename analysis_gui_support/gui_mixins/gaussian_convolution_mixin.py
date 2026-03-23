@@ -10,8 +10,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 from tkinter import messagebox
 
-from analysis_filters import _estimate_frequency_resolution_mhz, _window_width_in_freq_units
-from analysis_models import _current_user, _make_event
+from ..analysis_filters import _estimate_frequency_resolution_mhz, _window_width_in_freq_units
+from ..analysis_models import _current_user, _make_event, _read_polar_series
 
 _FWHM_TO_SIGMA = 1.0 / 2.3548200450309493
 
@@ -227,14 +227,19 @@ class GaussianConvolutionMixin:
 
         action_frame = tk.Frame(self.gauss_window, padx=8, pady=6)
         action_frame.pack(side="top", fill="x")
-        tk.Button(action_frame, text="Close", width=12, command=self._gauss_close).pack(side="right")
+        tk.Button(action_frame, text="Cancel", width=12, command=self._gauss_close).pack(side="right")
         tk.Button(
             action_frame,
             text="Reset View",
             width=12,
             command=self._gauss_reset_view,
         ).pack(side="right", padx=(8, 0))
-        self.gauss_attach_button = tk.Button(action_frame, text="Attach", width=12, command=self._gauss_attach)
+        self.gauss_attach_button = tk.Button(
+            action_frame,
+            text="Attach, Save, and Close",
+            width=24,
+            command=self._attach_save_and_close_gauss,
+        )
         self.gauss_attach_button.pack(side="right", padx=(8, 0))
         self._gauss_set_attach_state(attached=False)
 
@@ -324,10 +329,13 @@ class GaussianConvolutionMixin:
             norm = scan.baseline_filter.get("normalized", {})
             if not isinstance(norm, dict):
                 continue
-            z = np.asarray(norm.get("norm_complex"), dtype=np.complex128)
-            if z.shape != scan.freq.shape:
+            amp, _phase = _read_polar_series(
+                norm,
+                amplitude_key="norm_amp",
+                phase_key="norm_phase_deg_unwrapped",
+            )
+            if amp.shape != scan.freq.shape:
                 continue
-            amp = np.abs(z)
             f_sorted = np.sort(np.asarray(scan.freq, dtype=float))
             diffs = np.diff(f_sorted)
             diffs = diffs[np.isfinite(diffs)]
@@ -386,15 +394,16 @@ class GaussianConvolutionMixin:
         axes = self.gauss_figure.subplots(n, 1, sharex=False)
         axes = np.atleast_1d(axes)
         for i, scan in enumerate(scans):
+            freq_ghz = np.asarray(scan.freq, dtype=float) / 1.0e9
             ax = axes[i]
             prev = self.gauss_preview.get(self._scan_key(scan))
             if prev is None:
                 ax.text(0.5, 0.5, "Missing normalized data", ha="center", va="center")
                 ax.axis("off")
                 continue
-            ax.plot(scan.freq, prev["orig_amp"], color="0.45", linewidth=0.8, label="Original normalized |S21|")
+            ax.plot(freq_ghz, prev["orig_amp"], color="0.45", linewidth=0.8, label="Original normalized |S21|")
             ax.plot(
-                scan.freq,
+                freq_ghz,
                 prev["smooth_amp"],
                 color="tab:blue",
                 linewidth=1.3,
@@ -403,7 +412,7 @@ class GaussianConvolutionMixin:
             )
             for r0, r1 in prev["accepted_regions"]:
                 ax.plot(
-                    scan.freq[r0 : r1 + 1],
+                    freq_ghz[r0 : r1 + 1],
                     prev["smooth_amp"][r0 : r1 + 1],
                     color="tab:green",
                     linewidth=1.5,
@@ -412,7 +421,7 @@ class GaussianConvolutionMixin:
             min_idx = prev["minima_idx"]
             if min_idx.size:
                 ax.plot(
-                    scan.freq[min_idx],
+                    freq_ghz[min_idx],
                     prev["orig_amp"][min_idx],
                     linestyle="none",
                     marker="o",
@@ -421,7 +430,7 @@ class GaussianConvolutionMixin:
                     label="Region minima (raw)",
                 )
                 ax.plot(
-                    scan.freq[min_idx],
+                    freq_ghz[min_idx],
                     prev["smooth_amp"][min_idx],
                     linestyle="none",
                     marker="x",
@@ -435,7 +444,7 @@ class GaussianConvolutionMixin:
             if i == 0:
                 ax.legend(loc="upper right", fontsize=8)
             if i == n - 1:
-                ax.set_xlabel("Frequency")
+                ax.set_xlabel("Frequency (GHz)")
 
         width_khz = float(self.gauss_slider.get()) if self.gauss_slider is not None else 0.0
         threshold = (

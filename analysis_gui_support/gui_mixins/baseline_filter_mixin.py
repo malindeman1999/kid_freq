@@ -15,8 +15,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 from tkinter import messagebox, ttk
 
-from analysis_filters import _compute_one_scan_filter, _estimate_frequency_resolution_mhz
-from analysis_models import VNAScan, _current_user, _make_event
+from ..analysis_filters import _compute_one_scan_filter, _estimate_frequency_resolution_mhz
+from ..analysis_models import VNAScan, _current_user, _make_event, _read_polar_series
 
 
 class BaselineFilterMixin:
@@ -67,21 +67,25 @@ class BaselineFilterMixin:
         scans = self._selected_scans()
         if not scans:
             return
-        missing_phase2 = []
+        missing_phase3 = []
         for scan in scans:
-            phase2 = scan.candidate_resonators.get("phase_correction_2")
-            if not isinstance(phase2, dict):
-                missing_phase2.append(Path(scan.filename).name)
+            phase3 = scan.candidate_resonators.get("phase_correction_3")
+            if not isinstance(phase3, dict):
+                missing_phase3.append(Path(scan.filename).name)
                 continue
-            z2 = np.asarray(phase2.get("corrected_complex"), dtype=np.complex128)
-            if z2.shape != scan.freq.shape:
-                missing_phase2.append(Path(scan.filename).name)
-        if missing_phase2:
+            amp3, phase3_deg = _read_polar_series(
+                phase3,
+                amplitude_key="corrected_amp",
+                phase_key="corrected_phase_deg",
+            )
+            if amp3.shape != scan.freq.shape or phase3_deg.shape != scan.freq.shape:
+                missing_phase3.append(Path(scan.filename).name)
+        if missing_phase3:
             messagebox.showwarning(
-                "Missing Phase Correction 2 output",
+                "Missing Phase Correction 3 output",
                 "Run pipeline in order:\n"
-                "Phase Correction -> Phase Correction 2 -> Baseline Filtering.\n\n"
-                "Use 'Phase Correction 2' and click Attach for all selected scans before baseline filtering.",
+                "Phase Correction 1 -> Phase Correction 2 -> Phase Correction 3 -> Baseline Filtering.\n\n"
+                "Use 'Phase Correction 3' and click Attach for all selected scans before baseline filtering.",
             )
             return
 
@@ -102,11 +106,11 @@ class BaselineFilterMixin:
         resolution_mhz = _estimate_frequency_resolution_mhz(scans)
         min_mhz = min(max(resolution_mhz, 1e-6), 10.0)
         max_mhz = 10.0
-        default_width_mhz = min(max(2.0, min_mhz), max_mhz)
-        default_step_mhz = min(max(1.0, min_mhz), max_mhz)
+        default_width_mhz = min(max(1.0, min_mhz), max_mhz)
+        default_step_mhz = min(max(0.5, min_mhz), max_mhz)
         default_low_slope = 10.0
         default_retain = 10.0
-        default_center = 50.0
+        default_center = 70.0
 
         saved_settings = []
         for scan in scans:
@@ -251,7 +255,7 @@ class BaselineFilterMixin:
 
         action_frame = tk.Frame(self.baseline_window, padx=8, pady=6)
         action_frame.pack(side="top", fill="x")
-        tk.Button(action_frame, text="Close", width=12, command=self._close_baseline_window).pack(
+        tk.Button(action_frame, text="Cancel", width=12, command=self._close_baseline_window).pack(
             side="right"
         )
         tk.Button(
@@ -261,7 +265,10 @@ class BaselineFilterMixin:
             command=self._baseline_reset_view,
         ).pack(side="right", padx=(8, 0))
         self.baseline_attach_button = tk.Button(
-            action_frame, text="Attach", width=12, command=self.attach_baseline_filter
+            action_frame,
+            text="Attach, Save, and Close",
+            width=24,
+            command=self._attach_save_and_close_baseline,
         )
         self.baseline_attach_button.pack(side="right", padx=(8, 0))
         self._set_attach_button_state(attached=False)
@@ -628,25 +635,26 @@ class BaselineFilterMixin:
             axes_list = list(axes_arr.ravel())
 
             for i, scan in enumerate(scans):
-                phase2 = scan.candidate_resonators.get("phase_correction_2", {})
-                z2 = np.asarray(phase2.get("corrected_complex"), dtype=np.complex128)
-                if z2.shape != scan.freq.shape:
-                    z2 = scan.amplitude() * np.exp(1j * np.radians(scan.phase_deg_unwrapped()))
-                amp = np.abs(z2)
-                ph = np.degrees(np.unwrap(np.angle(z2)))
+                freq_ghz = np.asarray(scan.freq, dtype=float) / 1.0e9
+                phase3 = scan.candidate_resonators.get("phase_correction_3", {})
+                amp, ph = _read_polar_series(
+                    phase3,
+                    amplitude_key="corrected_amp",
+                    phase_key="corrected_phase_deg",
+                )
                 ax_a = axes_arr[i, 0]
                 ax_p = axes_arr[i, 1]
-                ax_a.plot(scan.freq, amp, color="0.6", linewidth=0.8, label="Amplitude input")
-                ax_p.plot(scan.freq, ph, color="0.6", linewidth=0.8, label="Phase input")
+                ax_a.plot(freq_ghz, amp, color="0.6", linewidth=0.8, label="Amplitude input")
+                ax_p.plot(freq_ghz, ph, color="0.6", linewidth=0.8, label="Phase input")
 
                 key = self._scan_key(scan)
                 result = self._baseline_preview_results.get(key)
                 if result is not None:
                     baseline = result["baseline_amplitude"]
                     keep = result["retained_mask"].astype(bool)
-                    ax_a.plot(scan.freq, baseline, color="tab:blue", linewidth=0.8, label="Median")
+                    ax_a.plot(freq_ghz, baseline, color="tab:blue", linewidth=0.8, label="Median")
                     ax_a.plot(
-                        scan.freq[keep],
+                        freq_ghz[keep],
                         amp[keep],
                         linestyle="none",
                         marker=".",
@@ -655,7 +663,7 @@ class BaselineFilterMixin:
                         label="Retained",
                     )
                     ax_p.plot(
-                        scan.freq[keep],
+                        freq_ghz[keep],
                         ph[keep],
                         linestyle="none",
                         marker=".",
@@ -673,8 +681,8 @@ class BaselineFilterMixin:
                     ax_a.legend(loc="upper right", fontsize=8)
                     ax_p.legend(loc="upper right", fontsize=8)
 
-            axes_arr[-1, 0].set_xlabel("Frequency")
-            axes_arr[-1, 1].set_xlabel("Frequency")
+            axes_arr[-1, 0].set_xlabel("Frequency (GHz)")
+            axes_arr[-1, 1].set_xlabel("Frequency (GHz)")
             computed_count = len(self._baseline_preview_results)
             title_suffix = (
                 f"Computed overlays: {computed_count}/{len(scans)}"
@@ -736,10 +744,11 @@ class BaselineFilterMixin:
             keep = result["retained_mask"].astype(bool)
             baseline = result["baseline_amplitude"]
             filtered_freq = scan.freq[keep]
-            phase2 = scan.candidate_resonators["phase_correction_2"]
-            corrected_complex = np.asarray(phase2["corrected_complex"], dtype=np.complex128)
-            filtered_complex = corrected_complex[keep]
-            filtered_data_complex = np.vstack((filtered_freq, filtered_complex))
+            phase3 = scan.candidate_resonators["phase_correction_3"]
+            corrected_amp = np.asarray(phase3["corrected_amp"], dtype=float)
+            corrected_phase = np.asarray(phase3["corrected_phase_deg"], dtype=float)
+            filtered_amp = corrected_amp[keep]
+            filtered_phase = corrected_phase[keep]
             scan.baseline_filter = {
                 "attached_at": attached_at,
                 "attached_by": _current_user(),
@@ -751,8 +760,10 @@ class BaselineFilterMixin:
                 "slope_survivor_mask": result.get("slope_survivor_mask"),
                 "retained_mask": keep,
                 "baseline_amplitude": baseline,
-                "filtered_data_complex": filtered_data_complex,
-                "filtered_data_complex_format": "(2, N_kept) rows = [freq, complex_s21]",
+                "filtered_amp": filtered_amp,
+                "filtered_phase_deg": filtered_phase,
+                "filtered_data_polar": np.vstack((filtered_freq, filtered_amp, filtered_phase)),
+                "filtered_data_polar_format": "(3, N_kept) rows = [freq, amplitude, unwrapped_phase_deg]",
             }
             scan.processing_history.append(
                 _make_event(
