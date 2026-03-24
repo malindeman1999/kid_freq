@@ -112,7 +112,7 @@ class InterpolationSmoothMixin:
         resolution_mhz = _estimate_frequency_resolution_mhz(scans)
         min_mhz = min(max(resolution_mhz, 1e-6), 50.0)
         max_mhz = 50.0
-        default_smooth_mhz = min(max(25.0, min_mhz), max_mhz)
+        default_smooth_mhz = min(max(6.0, min_mhz), max_mhz)
 
         saved_widths_ghz = []
         for scan in scans:
