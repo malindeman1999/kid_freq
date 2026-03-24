@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import queue
 import threading
 from datetime import datetime
@@ -245,12 +246,19 @@ class DataAnalysisGUI(
         self.attached_res_edit_working_number_spinbox: Optional[tk.Spinbox] = None
         self.attached_res_edit_spacing_var: Optional[tk.DoubleVar] = None
         self.attached_res_edit_spacing_scale: Optional[tk.Scale] = None
+        self.attached_res_edit_truncate_var: Optional[tk.BooleanVar] = None
+        self.attached_res_edit_truncate_threshold_var: Optional[tk.DoubleVar] = None
+        self.attached_res_edit_truncate_threshold_scale: Optional[tk.Scale] = None
         self.attached_res_edit_add_button: Optional[tk.Button] = None
+        self.attached_res_edit_exit_button: Optional[tk.Button] = None
         self.attached_res_edit_ax = None
         self._attached_res_edit_points: List[dict] = []
         self._attached_res_edit_selected: Optional[tuple[str, str]] = None
         self._attached_res_edit_pending_add: bool = False
         self._attached_res_edit_default_xlim: Optional[tuple[float, float]] = None
+        self._attached_res_edit_missing_normalized_warned: Optional[tuple[str, ...]] = None
+        self._attached_res_edit_snapshot: Optional[dict] = None
+        self._attached_res_edit_changed: bool = False
         self._res_scan_key: Optional[str] = None
         self._res_selected_range: Optional[tuple[float, float]] = None
         self._res_manual_ylim: Optional[tuple[float, float]] = None
@@ -380,7 +388,7 @@ class DataAnalysisGUI(
             left, text="Plot Attached Resonators", width=24, command=self.open_attached_resonance_plotter
         ).pack(anchor="w", pady=2)
         tk.Button(
-            left, text="Edit Attached Resonators", width=24, command=self.open_attached_resonance_editor
+            left, text="Attach Res. to Sel. Scans", width=24, command=self.open_attached_resonance_editor
         ).pack(anchor="w", pady=2)
         tk.Button(
             left, text="Clear Selected Attachments", width=24, command=self.clear_selected_scan_attachments
@@ -1854,12 +1862,12 @@ class DataAnalysisGUI(
         self.attached_res_edit_window = tk.Toplevel(self.root)
         self.attached_res_edit_window.title("Edit Attached Resonators")
         self.attached_res_edit_window.geometry("1320x900")
-        self.attached_res_edit_window.protocol("WM_DELETE_WINDOW", self._close_attached_resonance_editor)
+        self.attached_res_edit_window.protocol("WM_DELETE_WINDOW", self._attached_resonance_editor_exit)
 
         controls = tk.Frame(self.attached_res_edit_window, padx=8, pady=8)
         controls.pack(side="top", fill="x")
         self.attached_res_edit_status_var = tk.StringVar(
-            value="Normalized selected scans with attached resonators will be plotted."
+            value="Normalized selected scans will be plotted."
         )
         tk.Label(controls, textvariable=self.attached_res_edit_status_var, anchor="w").pack(
             side="left", fill="x", expand=True
@@ -1891,6 +1899,33 @@ class DataAnalysisGUI(
             "<KeyRelease>",
             self._attached_resonance_editor_on_spacing_release,
         )
+        self.attached_res_edit_truncate_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            number_controls,
+            text="Truncate |S21|",
+            variable=self.attached_res_edit_truncate_var,
+            command=self._attached_resonance_editor_on_truncate_toggle,
+        ).pack(side="left", padx=(10, 4))
+        self.attached_res_edit_truncate_threshold_var = tk.DoubleVar(value=1.5)
+        self.attached_res_edit_truncate_threshold_scale = tk.Scale(
+            number_controls,
+            from_=1.0,
+            to=2.0,
+            resolution=0.05,
+            orient="horizontal",
+            length=110,
+            showvalue=True,
+            variable=self.attached_res_edit_truncate_threshold_var,
+        )
+        self.attached_res_edit_truncate_threshold_scale.pack(side="left")
+        self.attached_res_edit_truncate_threshold_scale.bind(
+            "<ButtonRelease-1>",
+            self._attached_resonance_editor_on_truncate_release,
+        )
+        self.attached_res_edit_truncate_threshold_scale.bind(
+            "<KeyRelease>",
+            self._attached_resonance_editor_on_truncate_release,
+        )
         tk.Label(number_controls, text="Working #").pack(side="left", padx=(10, 4))
         self.attached_res_edit_working_number_var = tk.StringVar(value="1")
         self.attached_res_edit_working_number_spinbox = tk.Spinbox(
@@ -1908,9 +1943,10 @@ class DataAnalysisGUI(
         tk.Button(
             controls, text="Reset View", width=12, command=self._attached_resonance_editor_reset_view
         ).pack(side="right", padx=(8, 0))
-        tk.Button(
-            controls, text="Close", width=12, command=self._close_attached_resonance_editor
-        ).pack(side="right", padx=(8, 0))
+        self.attached_res_edit_exit_button = tk.Button(
+            controls, text="Exit", width=12, command=self._attached_resonance_editor_exit
+        )
+        self.attached_res_edit_exit_button.pack(side="right", padx=(8, 0))
 
         self.attached_res_edit_figure = Figure(figsize=(12, 7))
         self.attached_res_edit_canvas = FigureCanvasTkAgg(
@@ -1929,6 +1965,9 @@ class DataAnalysisGUI(
         self._attached_res_edit_selected = None
         self._attached_res_edit_pending_add = False
         self._attached_res_edit_default_xlim = None
+        self._attached_res_edit_missing_normalized_warned = None
+        self._attached_res_edit_snapshot = self._attached_resonance_editor_capture_snapshot()
+        self._attached_res_edit_changed = False
         self._attached_resonance_editor_reset_working_number()
         self._render_attached_resonance_editor()
 
@@ -1944,14 +1983,102 @@ class DataAnalysisGUI(
         self.attached_res_edit_working_number_spinbox = None
         self.attached_res_edit_spacing_var = None
         self.attached_res_edit_spacing_scale = None
+        self.attached_res_edit_truncate_var = None
+        self.attached_res_edit_truncate_threshold_var = None
+        self.attached_res_edit_truncate_threshold_scale = None
         self.attached_res_edit_add_button = None
+        self.attached_res_edit_exit_button = None
         self.attached_res_edit_ax = None
         self._attached_res_edit_points = []
         self._attached_res_edit_selected = None
         self._attached_res_edit_pending_add = False
         self._attached_res_edit_default_xlim = None
+        self._attached_res_edit_missing_normalized_warned = None
+        self._attached_res_edit_snapshot = None
+        self._attached_res_edit_changed = False
 
-    def _selected_scans_with_normalized_and_attached_resonators(
+    def _attached_resonance_editor_capture_snapshot(self) -> dict:
+        scan_payloads: dict[str, object] = {}
+        scan_history_lengths: dict[str, int] = {}
+        for scan in self._selected_scans():
+            key = self._scan_key(scan)
+            payload = scan.candidate_resonators.get("sheet_resonances")
+            scan_payloads[key] = copy.deepcopy(payload) if isinstance(payload, dict) else None
+            scan_history_lengths[key] = len(scan.processing_history)
+        return {
+            "scan_payloads": scan_payloads,
+            "scan_history_lengths": scan_history_lengths,
+            "dataset_processing_history_len": len(self.dataset.processing_history),
+            "dataset_transcript_len": len(self.dataset.transcript),
+            "was_dirty": self._dirty,
+        }
+
+    def _attached_resonance_editor_restore_snapshot(self) -> None:
+        snapshot = self._attached_res_edit_snapshot
+        if not isinstance(snapshot, dict):
+            return
+        payloads = snapshot.get("scan_payloads", {})
+        history_lengths = snapshot.get("scan_history_lengths", {})
+        for scan in self.dataset.vna_scans:
+            key = self._scan_key(scan)
+            if key not in payloads:
+                continue
+            payload = payloads[key]
+            if isinstance(payload, dict):
+                scan.candidate_resonators["sheet_resonances"] = copy.deepcopy(payload)
+            else:
+                scan.candidate_resonators.pop("sheet_resonances", None)
+            prior_len = int(history_lengths.get(key, len(scan.processing_history)))
+            if len(scan.processing_history) > prior_len:
+                del scan.processing_history[prior_len:]
+        dataset_processing_len = int(snapshot.get("dataset_processing_history_len", len(self.dataset.processing_history)))
+        if len(self.dataset.processing_history) > dataset_processing_len:
+            del self.dataset.processing_history[dataset_processing_len:]
+        dataset_transcript_len = int(snapshot.get("dataset_transcript_len", len(self.dataset.transcript)))
+        if len(self.dataset.transcript) > dataset_transcript_len:
+            del self.dataset.transcript[dataset_transcript_len:]
+        self._dirty = bool(snapshot.get("was_dirty", self._dirty))
+        self._refresh_status()
+        self._reload_transcript_ui()
+
+    def _attached_resonance_editor_save(self) -> bool:
+        if not self._attached_res_edit_changed:
+            if self.attached_res_edit_status_var is not None:
+                self.attached_res_edit_status_var.set("Attached resonator edits are already saved.")
+            return True
+        self._mark_dirty()
+        if not self._autosave_dataset():
+            return False
+        self._attached_res_edit_changed = False
+        self._attached_res_edit_snapshot = self._attached_resonance_editor_capture_snapshot()
+        if self.attached_res_edit_status_var is not None:
+            self.attached_res_edit_status_var.set("Attached resonator edits saved.")
+        self._log("Saved attached resonator edits.")
+        return True
+
+    def _attached_resonance_editor_exit(self) -> None:
+        if not self._attached_res_edit_changed:
+            self._close_attached_resonance_editor()
+            return
+        dialog = messagebox.Message(
+            parent=self.attached_res_edit_window,
+            title="Save attached resonator edits?",
+            message="Save attached resonator edits before exiting?",
+            icon=messagebox.WARNING,
+            type=messagebox.YESNOCANCEL,
+            default=messagebox.YES,
+        )
+        response = str(dialog.show()).lower()
+        if response == "cancel":
+            return
+        if response == "yes":
+            if not self._attached_resonance_editor_save():
+                return
+        else:
+            self._attached_resonance_editor_restore_snapshot()
+        self._close_attached_resonance_editor()
+
+    def _selected_scans_for_attached_resonance_editor(
         self,
     ) -> tuple[list[dict], list[str]]:
         rows: list[dict] = []
@@ -1959,22 +2086,22 @@ class DataAnalysisGUI(
         selected_scans = self._selected_scans()
         for idx, scan in enumerate(selected_scans):
             if not self._has_valid_normalized_output(scan):
-                warnings.append(f"{Path(scan.filename).name}: normalized data missing; skipped.")
+                warnings.append(Path(scan.filename).name)
                 continue
             payload = scan.candidate_resonators.get("sheet_resonances")
             assignments = payload.get("assignments") if isinstance(payload, dict) else {}
             if not isinstance(assignments, dict):
                 assignments = {}
+            freq = np.asarray(scan.freq, dtype=float)
             norm = scan.baseline_filter.get("normalized", {})
             amp, _phase = _read_polar_series(
                 norm,
                 amplitude_key="norm_amp",
                 phase_key="norm_phase_deg_unwrapped",
             )
-            freq = np.asarray(scan.freq, dtype=float)
             amp = np.asarray(amp, dtype=float)
             if freq.shape != amp.shape or freq.size == 0:
-                warnings.append(f"{Path(scan.filename).name}: normalized data malformed; skipped.")
+                warnings.append(Path(scan.filename).name)
                 continue
             order = np.argsort(freq)
             freq = freq[order]
@@ -2024,7 +2151,9 @@ class DataAnalysisGUI(
             if level_key not in labels_by_level:
                 level_keys.append(level_key)
                 labels_by_level[level_key] = []
-            labels_by_level[level_key].append(Path(row["scan"].filename).name)
+            file_timestamp = str(getattr(row["scan"], "file_timestamp", "")).strip()
+            date_label = file_timestamp.split("T", 1)[0] if file_timestamp else "unknown date"
+            labels_by_level[level_key].append(date_label)
 
         offset_by_scan_key: dict[str, float] = {}
         tick_info: list[tuple[float, str]] = []
@@ -2033,11 +2162,7 @@ class DataAnalysisGUI(
             offset = float((nlevels - 1 - level_pos) * spacing)
             tick_y = offset + 1.0
             label_names = labels_by_level[level_key]
-            label = (
-                f"Group {level_key[1]}"
-                if level_key[0] == "group"
-                else label_names[0]
-            )
+            label = label_names[0] if label_names else "unknown date"
             tick_info.append((tick_y, label))
             for row in rows:
                 plot_group = row.get("plot_group")
@@ -2049,11 +2174,28 @@ class DataAnalysisGUI(
     def _render_attached_resonance_editor(self) -> None:
         if self.attached_res_edit_figure is None or self.attached_res_edit_canvas is None:
             return
-        rows, warnings = self._selected_scans_with_normalized_and_attached_resonators()
+        rows, warnings = self._selected_scans_for_attached_resonance_editor()
+        warning_tuple = tuple(sorted(set(warnings)))
+        if warning_tuple:
+            if self._attached_res_edit_missing_normalized_warned != warning_tuple:
+                self._attached_res_edit_missing_normalized_warned = warning_tuple
+                detail_lines = list(warning_tuple[:12])
+                if len(warning_tuple) > 12:
+                    detail_lines.append(f"... and {len(warning_tuple) - 12} more")
+                messagebox.showwarning(
+                    "Missing normalized data",
+                    "The following selected scans do not have normalized data and will not be shown:\n\n"
+                    + "\n".join(detail_lines),
+                    parent=self.attached_res_edit_window,
+                )
+        else:
+            self._attached_res_edit_missing_normalized_warned = None
         if not rows:
-            message = "No selected scans with both normalized data and attached resonators."
+            message = "No selected scans with normalized data."
             if warnings:
-                message += " " + warnings[0]
+                message += " Missing normalized data for: " + ", ".join(warnings[:6])
+                if len(warnings) > 6:
+                    message += f", ... (+{len(warnings) - 6} more)"
             if self.attached_res_edit_status_var is not None:
                 self.attached_res_edit_status_var.set(message)
             self.attached_res_edit_figure.clear()
@@ -2090,13 +2232,14 @@ class DataAnalysisGUI(
             scan = row["scan"]
             offset = float(offset_by_scan_key[str(row["scan_key"])])
             freq_ghz = np.asarray(row["freq"], dtype=float) / 1.0e9
-            y = np.asarray(row["amp"], dtype=float) + offset
+            amp_display = self._attached_resonance_editor_display_amp(row["amp"])
+            y = amp_display + offset
             ax.plot(freq_ghz, y, linewidth=1.0, color="tab:blue", alpha=0.8, zorder=1)
 
             for resonator in row["resonators"]:
                 target_hz = float(resonator["target_hz"])
                 target_ghz = target_hz / 1.0e9
-                y_pt = self._interpolate_y(row["freq"], row["amp"], target_hz) + offset
+                y_pt = self._interpolate_y(row["freq"], amp_display, target_hz) + offset
                 scan_key = str(row["scan_key"])
                 resonator_number = str(resonator["resonator_number"])
                 point = {
@@ -2155,8 +2298,16 @@ class DataAnalysisGUI(
         ax.set_yticks([item[0] for item in tick_info])
         ax.set_yticklabels([item[1] for item in tick_info], fontsize=8)
 
-        y_low = min(float(np.min(row["amp"])) + float(offset_by_scan_key[str(row["scan_key"])]) for row in rows)
-        y_high = max(float(np.max(row["amp"])) + float(offset_by_scan_key[str(row["scan_key"])]) for row in rows)
+        y_low = min(
+            float(np.min(self._attached_resonance_editor_display_amp(row["amp"])))
+            + float(offset_by_scan_key[str(row["scan_key"])])
+            for row in rows
+        )
+        y_high = max(
+            float(np.max(self._attached_resonance_editor_display_amp(row["amp"])))
+            + float(offset_by_scan_key[str(row["scan_key"])])
+            for row in rows
+        )
         ax.set_ylim(y_low - 0.2, y_high + 0.2)
         self._attached_res_edit_default_xlim = (freq_min - 0.5 * x_pad, freq_max + 2.0 * x_pad)
         if prior_xlim is not None:
@@ -2170,14 +2321,20 @@ class DataAnalysisGUI(
                 "Use 'Add Resonator' then click a scan to add one."
             )
             if warnings:
-                status += f" Skipped {len(warnings)} scan(s)."
+                status += " Missing normalized data for: " + ", ".join(warnings[:6])
+                if len(warnings) > 6:
+                    status += f", ... (+{len(warnings) - 6} more)"
             if self._attached_res_edit_pending_add:
                 resonator_number = self._attached_resonance_editor_working_number()
                 status = f"Add mode: click near a scan trace to add resonator {resonator_number}."
+                if warnings:
+                    status += " Missing normalized data for: " + ", ".join(warnings[:4])
+                    if len(warnings) > 4:
+                        status += f", ... (+{len(warnings) - 4} more)"
             self.attached_res_edit_status_var.set(status)
         self._attached_resonance_editor_update_add_button()
 
-        self.attached_res_edit_figure.subplots_adjust(left=0.22, right=0.98, bottom=0.09, top=0.96)
+        self.attached_res_edit_figure.subplots_adjust(left=0.12, right=0.985, bottom=0.09, top=0.96)
         self.attached_res_edit_canvas.draw_idle()
 
     def _attached_resonance_editor_reset_view(self) -> None:
@@ -2199,6 +2356,27 @@ class DataAnalysisGUI(
             self.attached_res_edit_spacing_var.set(value)
         return value
 
+    def _attached_resonance_editor_truncate_enabled(self) -> bool:
+        return bool(self.attached_res_edit_truncate_var.get()) if self.attached_res_edit_truncate_var is not None else True
+
+    def _attached_resonance_editor_truncate_threshold(self) -> float:
+        if self.attached_res_edit_truncate_threshold_var is None:
+            return 1.5
+        try:
+            value = float(self.attached_res_edit_truncate_threshold_var.get())
+        except Exception:
+            value = 1.5
+        value = min(max(value, 1.0), 2.0)
+        if abs(value - float(self.attached_res_edit_truncate_threshold_var.get())) > 1e-12:
+            self.attached_res_edit_truncate_threshold_var.set(value)
+        return value
+
+    def _attached_resonance_editor_display_amp(self, amp: Sequence[float]) -> np.ndarray:
+        amp_arr = np.asarray(amp, dtype=float)
+        if not self._attached_resonance_editor_truncate_enabled():
+            return amp_arr
+        return np.minimum(amp_arr, self._attached_resonance_editor_truncate_threshold())
+
     def _attached_resonance_editor_on_spacing_release(self, _event) -> None:
         if self.attached_res_edit_window is None or not self.attached_res_edit_window.winfo_exists():
             return
@@ -2213,6 +2391,12 @@ class DataAnalysisGUI(
             self.attached_res_edit_ax.set_xlim(prior_xlim)
             if self.attached_res_edit_canvas is not None:
                 self.attached_res_edit_canvas.draw_idle()
+
+    def _attached_resonance_editor_on_truncate_toggle(self) -> None:
+        self._render_attached_resonance_editor()
+
+    def _attached_resonance_editor_on_truncate_release(self, _event) -> None:
+        self._render_attached_resonance_editor()
 
     def _attached_resonance_editor_toggle_add(self) -> None:
         self._attached_res_edit_pending_add = not self._attached_res_edit_pending_add
@@ -2303,9 +2487,7 @@ class DataAnalysisGUI(
                     {"scan": scan.filename, "resonator_number": resonator_number},
                 )
             )
-            self._mark_dirty()
-            self._autosave_dataset()
-            self._log(f"Deleted attached resonator {resonator_number} from {Path(scan.filename).name}.")
+            self._attached_res_edit_changed = True
             break
         self._attached_res_edit_selected = None
         self._attached_resonance_editor_reset_working_number()
@@ -2367,9 +2549,17 @@ class DataAnalysisGUI(
         return best
 
     def _attached_resonance_editor_add_at_click(self, x_ghz: float, y_val: float) -> None:
-        rows, _warnings = self._selected_scans_with_normalized_and_attached_resonators()
+        rows, _warnings = self._selected_scans_for_attached_resonance_editor()
         if not rows:
             return
+        visible_range_hz = None
+        if self.attached_res_edit_ax is not None:
+            try:
+                x0, x1 = self.attached_res_edit_ax.get_xlim()
+                lo_ghz, hi_ghz = (float(x0), float(x1)) if float(x0) <= float(x1) else (float(x1), float(x0))
+                visible_range_hz = (lo_ghz * 1.0e9, hi_ghz * 1.0e9)
+            except Exception:
+                visible_range_hz = None
         offset_by_scan_key, _tick_info = self._attached_resonance_editor_offset_map(
             rows,
             self._attached_resonance_editor_curve_spacing(),
@@ -2378,7 +2568,8 @@ class DataAnalysisGUI(
         best_distance = None
         for row in rows:
             offset = float(offset_by_scan_key[str(row["scan_key"])])
-            y_trace = self._interpolate_y(row["freq"], row["amp"], x_ghz * 1.0e9) + offset
+            amp_display = self._attached_resonance_editor_display_amp(row["amp"])
+            y_trace = self._interpolate_y(row["freq"], amp_display, x_ghz * 1.0e9) + offset
             distance = abs(y_trace - y_val)
             if best_distance is None or distance < best_distance:
                 best_distance = distance
@@ -2393,7 +2584,35 @@ class DataAnalysisGUI(
             best_row["freq"],
             best_row["amp"],
             x_ghz * 1.0e9,
+            visible_range_hz=visible_range_hz,
         )
+        if target_hz is None:
+            detail = "Unable to find a visible local minimum within the current x-range."
+            if visible_range_hz is not None:
+                detail = (
+                    f"Unable to find a visible local minimum. Click={x_ghz:.9g} GHz, "
+                    f"visible range={visible_range_hz[0] / 1.0e9:.9g} to {visible_range_hz[1] / 1.0e9:.9g} GHz."
+                )
+            if self.attached_res_edit_status_var is not None:
+                self.attached_res_edit_status_var.set(detail)
+            messagebox.showwarning("Add resonator failed", detail, parent=self.attached_res_edit_window)
+            return
+        if visible_range_hz is not None:
+            lo_hz, hi_hz = visible_range_hz
+            if not (lo_hz <= target_hz <= hi_hz):
+                detail = (
+                    f"Attached-resonator add aborted because snapped target "
+                    f"{target_hz / 1.0e9:.9g} GHz is outside the visible range "
+                    f"{lo_hz / 1.0e9:.9g} to {hi_hz / 1.0e9:.9g} GHz."
+                )
+                if self.attached_res_edit_status_var is not None:
+                    self.attached_res_edit_status_var.set(detail)
+                messagebox.showwarning("Add resonator failed", detail, parent=self.attached_res_edit_window)
+                self._log(
+                    f"Attach resonator warning: click at {x_ghz:.9g} GHz on {Path(scan.filename).name} "
+                    f"snapped to off-screen target {target_hz / 1.0e9:.9g} GHz."
+                )
+                return
         payload = self._sheet_resonance_attachment(scan)
         assignments = payload["assignments"]
         assignments[resonator_number] = {
@@ -2410,13 +2629,8 @@ class DataAnalysisGUI(
                 {"scan": scan.filename, "resonator_number": resonator_number, "frequency_hz": target_hz},
             )
         )
-        self._mark_dirty()
-        self._autosave_dataset()
-        self._log(
-            f"Added attached resonator {resonator_number} to {Path(scan.filename).name} at {target_hz / 1.0e9:.9g} GHz."
-        )
+        self._attached_res_edit_changed = True
         self._attached_res_edit_selected = (self._scan_key(scan), resonator_number)
-        self._attached_resonance_editor_reset_working_number()
         self._render_attached_resonance_editor()
 
     def _attached_resonance_editor_minimum_near_click(
@@ -2425,24 +2639,28 @@ class DataAnalysisGUI(
         amp: Sequence[float],
         click_hz: float,
         window_hz: float = 3.0e5,
-    ) -> float:
+        visible_range_hz: Optional[tuple[float, float]] = None,
+    ) -> Optional[float]:
         freq_arr = np.asarray(freq_hz, dtype=float)
         amp_arr = np.asarray(amp, dtype=float)
         if freq_arr.size == 0 or amp_arr.size == 0:
-            return float(click_hz)
+            return None
         window_mask = np.abs(freq_arr - float(click_hz)) <= float(window_hz)
+        if visible_range_hz is not None:
+            lo_hz, hi_hz = visible_range_hz
+            visible_mask = (freq_arr >= float(lo_hz)) & (freq_arr <= float(hi_hz))
+            window_mask = window_mask & visible_mask
         if np.any(window_mask):
             candidate_indices = np.flatnonzero(window_mask)
             best_local_idx = int(candidate_indices[int(np.argmin(amp_arr[window_mask]))])
             return float(freq_arr[best_local_idx])
-        nearest_idx = int(np.argmin(np.abs(freq_arr - float(click_hz))))
-        return float(freq_arr[nearest_idx])
+        return None
 
     def _attached_resonance_editor_move_selected(self, x_ghz: float, y_val: float) -> None:
         if self._attached_res_edit_selected is None:
             return
         scan_key, resonator_number = self._attached_res_edit_selected
-        rows, _warnings = self._selected_scans_with_normalized_and_attached_resonators()
+        rows, _warnings = self._selected_scans_for_attached_resonance_editor()
         offset_by_scan_key, _tick_info = self._attached_resonance_editor_offset_map(
             rows,
             self._attached_resonance_editor_curve_spacing(),
@@ -2452,7 +2670,8 @@ class DataAnalysisGUI(
             if row["scan_key"] != scan_key:
                 continue
             offset = float(offset_by_scan_key[str(row["scan_key"])])
-            y_trace = self._interpolate_y(row["freq"], row["amp"], x_ghz * 1.0e9) + offset
+            amp_display = self._attached_resonance_editor_display_amp(row["amp"])
+            y_trace = self._interpolate_y(row["freq"], amp_display, x_ghz * 1.0e9) + offset
             if abs(y_trace - y_val) <= 0.35:
                 target_row = row
                 break
@@ -2476,11 +2695,7 @@ class DataAnalysisGUI(
                 {"scan": scan.filename, "resonator_number": resonator_number, "frequency_hz": target_hz},
             )
         )
-        self._mark_dirty()
-        self._autosave_dataset()
-        self._log(
-            f"Moved attached resonator {resonator_number} on {Path(scan.filename).name} to {target_hz / 1.0e9:.9g} GHz."
-        )
+        self._attached_res_edit_changed = True
         self._render_attached_resonance_editor()
 
 def main() -> None:
