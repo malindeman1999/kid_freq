@@ -5,14 +5,16 @@ import queue
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
 import tkinter as tk
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
+from scipy import stats
 from tkinter import filedialog, messagebox, simpledialog, scrolledtext, ttk
 
 from analysis_gui_support.analysis_io import (
@@ -237,6 +239,55 @@ class DataAnalysisGUI(
         self.plot_scans_show_attached_res_var: Optional[tk.BooleanVar] = None
         self.plot_scans_auto_y_var: Optional[tk.BooleanVar] = None
         self.plot_scans_status_var: Optional[tk.StringVar] = None
+        self.scan_evolution_window: Optional[tk.Toplevel] = None
+        self.scan_evolution_canvas: Optional[FigureCanvasTkAgg] = None
+        self.scan_evolution_toolbar: Optional[NavigationToolbar2Tk] = None
+        self.scan_evolution_figure: Optional[Figure] = None
+        self.scan_evolution_status_var: Optional[tk.StringVar] = None
+        self.scan_evolution_mod360_var: Optional[tk.BooleanVar] = None
+        self.scan_evolution_show_gaussian_var: Optional[tk.BooleanVar] = None
+        self.scan_evolution_show_dsdf_var: Optional[tk.BooleanVar] = None
+        self.scan_evolution_show_phase_2pi_var: Optional[tk.BooleanVar] = None
+        self.scan_evolution_show_phase_vna_var: Optional[tk.BooleanVar] = None
+        self.scan_evolution_show_phase_other_var: Optional[tk.BooleanVar] = None
+        self.scan_evolution_show_attached_res_var: Optional[tk.BooleanVar] = None
+        self._scan_evolution_scan_key: Optional[str] = None
+        self._scan_evolution_stage_rows: List[dict] = []
+        self._scan_evolution_axes_rows: List[tuple[object, object, object]] = []
+        self._scan_evolution_syncing_xlim: bool = False
+        self.res_shift_window: Optional[tk.Toplevel] = None
+        self.res_shift_canvas: Optional[FigureCanvasTkAgg] = None
+        self.res_shift_toolbar: Optional[NavigationToolbar2Tk] = None
+        self.res_shift_figure: Optional[Figure] = None
+        self.res_shift_status_var: Optional[tk.StringVar] = None
+        self.res_shift_show_labels_var: Optional[tk.BooleanVar] = None
+        self.res_shift_connect_var: Optional[tk.BooleanVar] = None
+        self._res_shift_ax = None
+        self.res_shift_corr_window: Optional[tk.Toplevel] = None
+        self.res_shift_corr_canvas: Optional[FigureCanvasTkAgg] = None
+        self.res_shift_corr_toolbar: Optional[NavigationToolbar2Tk] = None
+        self.res_shift_corr_figure: Optional[Figure] = None
+        self.res_shift_corr_status_var: Optional[tk.StringVar] = None
+        self._res_shift_corr_axes: tuple[object, object] | None = None
+        self.res_pair_dfdiff_hist_window: Optional[tk.Toplevel] = None
+        self.res_pair_dfdiff_hist_canvas: Optional[FigureCanvasTkAgg] = None
+        self.res_pair_dfdiff_hist_toolbar: Optional[NavigationToolbar2Tk] = None
+        self.res_pair_dfdiff_hist_figure: Optional[Figure] = None
+        self.res_pair_dfdiff_hist_status_var: Optional[tk.StringVar] = None
+        self.res_pair_dfdiff_hist_sep_mhz_var: Optional[tk.DoubleVar] = None
+        self.res_pair_dfdiff_hist_bin_mhz_var: Optional[tk.DoubleVar] = None
+        self.res_pair_dfdiff_hist_capture_var: Optional[tk.DoubleVar] = None
+        self.res_pair_dfdiff_hist_fit_mode_var: Optional[tk.StringVar] = None
+        self.res_pair_dfdiff_hist_num_res_var: Optional[tk.IntVar] = None
+        self.res_pair_dfdiff_hist_band_min_var: Optional[tk.DoubleVar] = None
+        self.res_pair_dfdiff_hist_band_max_var: Optional[tk.DoubleVar] = None
+        self.res_pair_dfdiff_hist_freq_dist_var: Optional[tk.StringVar] = None
+        self.res_pair_dfdiff_hist_freq_jitter_khz_var: Optional[tk.DoubleVar] = None
+        self.res_pair_dfdiff_hist_sep_scale: Optional[tk.Scale] = None
+        self.res_pair_dfdiff_hist_bin_scale: Optional[tk.Scale] = None
+        self.res_pair_dfdiff_hist_capture_scale: Optional[tk.Scale] = None
+        self.res_pair_dfdiff_hist_freq_jitter_scale: Optional[tk.Scale] = None
+        self._res_pair_dfdiff_hist_ax = None
         self.attached_res_edit_window: Optional[tk.Toplevel] = None
         self.attached_res_edit_canvas: Optional[FigureCanvasTkAgg] = None
         self.attached_res_edit_toolbar: Optional[NavigationToolbar2Tk] = None
@@ -252,6 +303,7 @@ class DataAnalysisGUI(
         self.attached_res_edit_truncate_threshold_var: Optional[tk.DoubleVar] = None
         self.attached_res_edit_truncate_threshold_scale: Optional[tk.Scale] = None
         self.attached_res_edit_add_button: Optional[tk.Button] = None
+        self.attached_res_edit_renumber_button: Optional[tk.Button] = None
         self.attached_res_edit_undo_button: Optional[tk.Button] = None
         self.attached_res_edit_save_button: Optional[tk.Button] = None
         self.attached_res_edit_exit_button: Optional[tk.Button] = None
@@ -325,81 +377,94 @@ class DataAnalysisGUI(
         left.pack(side="left", fill="y")
         right = tk.Frame(bottom, padx=12)
         right.pack(side="left", fill="both", expand=True)
+        button_area = tk.Frame(left)
+        button_area.pack(anchor="w")
+        button_col1 = tk.Frame(button_area)
+        button_col1.pack(side="left", anchor="n")
+        button_col2 = tk.Frame(button_area, padx=8)
+        button_col2.pack(side="left", anchor="n")
 
-        tk.Button(left, text="New Dataset", width=24, command=self.start_new_dataset).pack(
-            anchor="w", pady=2
-        )
+        button_width = 24
+        button_parents = [button_col1, button_col2]
+        button_specs: list[dict[str, object]] = []
+
+        button_specs.append({"text": "New Dataset", "command": self.start_new_dataset})
         self.synth_button = tk.Button(
-            left, text="Generate Synthetic Data", width=24, command=self.open_synthetic_generator_window
+            button_col1, text="Generate Synthetic Data", width=button_width, command=self.open_synthetic_generator_window
         )
-        self.synth_button.pack(anchor="w", pady=2)
-        tk.Button(
-            left, text="Load Different Dataset", width=24, command=self.load_different_dataset
-        ).pack(anchor="w", pady=2)
-        tk.Button(left, text="Load VNA Scan(s)", width=24, command=self.load_vna_scan).pack(
-            anchor="w", pady=2
-        )
-        tk.Button(
-            left, text="Remove VNA Scan(s)", width=24, command=self.remove_vna_scans
-        ).pack(anchor="w", pady=2)
+        button_specs.append({"button": self.synth_button})
+        button_specs.append({"text": "Load Different Dataset", "command": self.load_different_dataset})
+        button_specs.append({"text": "Load VNA Scan(s)", "command": self.load_vna_scan})
+        button_specs.append({"text": "Remove VNA Scan(s)", "command": self.remove_vna_scans})
         self.select_scans_button = tk.Button(
-            left, text="Select Scans for Analysis", width=24, command=self.open_analysis_selector
+            button_col1, text="Select Scans for Analysis", width=button_width, command=self.open_analysis_selector
         )
-        self.select_scans_button.pack(anchor="w", pady=2)
-        tk.Button(
-            left, text="Group Selected Scans", width=24, command=self.group_selected_scans_for_plotting
-        ).pack(anchor="w", pady=2)
-        tk.Button(
-            left, text="Plot Selected VNA Scans", width=24, command=self.plot_selected_vna_scans
-        ).pack(anchor="w", pady=2)
+        button_specs.append({"button": self.select_scans_button})
+        button_specs.append({"text": "Group Selected Scans", "command": self.group_selected_scans_for_plotting})
+        button_specs.append({"text": "Plot Selected VNA Scans", "command": self.plot_selected_vna_scans})
+        button_specs.append({"text": "Scan Evolution", "command": self.open_scan_evolution_window})
         self.unwrap_button = tk.Button(
-            left, text="Phase Correction 1", width=24, command=self.open_unwrap_phase_window
+            button_col1, text="Phase Correction 1", width=button_width, command=self.open_unwrap_phase_window
         )
-        self.unwrap_button.pack(anchor="w", pady=2)
+        button_specs.append({"button": self.unwrap_button})
         self.phase2_button = tk.Button(
-            left, text="Phase Correction 2", width=24, command=self.open_second_phase_correction_window
+            button_col1, text="Phase Correction 2", width=button_width, command=self.open_second_phase_correction_window
         )
-        self.phase2_button.pack(anchor="w", pady=2)
+        button_specs.append({"button": self.phase2_button})
         self.phase3_button = tk.Button(
-            left, text="Phase Correction 3", width=24, command=self.open_third_phase_correction_window
+            button_col1, text="Phase Correction 3", width=button_width, command=self.open_third_phase_correction_window
         )
-        self.phase3_button.pack(anchor="w", pady=2)
+        button_specs.append({"button": self.phase3_button})
         self.baseline_button = tk.Button(
-            left, text="Baseline Filtering", width=24, command=self.open_baseline_filter_window
+            button_col1, text="Baseline Filtering", width=button_width, command=self.open_baseline_filter_window
         )
-        self.baseline_button.pack(anchor="w", pady=2)
+        button_specs.append({"button": self.baseline_button})
         self.interp_button = tk.Button(
-            left, text="Interp + Smooth", width=24, command=self.open_interp_smooth_window
+            button_col1, text="Interp + Smooth", width=button_width, command=self.open_interp_smooth_window
         )
-        self.interp_button.pack(anchor="w", pady=2)
+        button_specs.append({"button": self.interp_button})
         self.norm_button = tk.Button(
-            left, text="Normalize Baseline", width=24, command=self.open_normalization_window
+            button_col1, text="Normalize Baseline", width=button_width, command=self.open_normalization_window
         )
-        self.norm_button.pack(anchor="w", pady=2)
+        button_specs.append({"button": self.norm_button})
         self.gauss_button = tk.Button(
-            left, text="Gaussian Convolve |S21|", width=24, command=self.open_gaussian_convolution_window
+            button_col1, text="Gaussian Convolve |S21|", width=button_width, command=self.open_gaussian_convolution_window
         )
-        self.gauss_button.pack(anchor="w", pady=2)
+        button_specs.append({"button": self.gauss_button})
         self.dsdf_button = tk.Button(
-            left, text="Gaussian Convolve |dS21/df|", width=24, command=self.open_dsdf_convolution_window
+            button_col1, text="Gaussian Convolve |dS21/df|", width=button_width, command=self.open_dsdf_convolution_window
         )
-        self.dsdf_button.pack(anchor="w", pady=2)
+        button_specs.append({"button": self.dsdf_button})
         self.res_button = tk.Button(
-            left, text="Resonance Selection", width=24, command=self.open_resonance_selection_window
+            button_col1, text="Resonance Selection", width=button_width, command=self.open_resonance_selection_window
         )
-        self.res_button.pack(anchor="w", pady=2)
-        tk.Button(
-            left, text="Load Resonators From Sheet", width=24, command=self.open_resonance_sheet_loader
-        ).pack(anchor="w", pady=2)
-        tk.Button(
-            left, text="Plot Attached Resonators", width=24, command=self.open_attached_resonance_plotter
-        ).pack(anchor="w", pady=2)
-        tk.Button(
-            left, text="Attach Res. to Sel. Scans", width=24, command=self.open_attached_resonance_editor
-        ).pack(anchor="w", pady=2)
-        tk.Button(
-            left, text="Clear Selected Attachments", width=24, command=self.clear_selected_scan_attachments
-        ).pack(anchor="w", pady=(12, 2))
+        button_specs.append({"button": self.res_button})
+        button_specs.append({"text": "Load Resonators From Sheet", "command": self.open_resonance_sheet_loader})
+        button_specs.append({"text": "Save Resonators To Sheet", "command": self.open_resonance_sheet_saver})
+        button_specs.append({"text": "Plot Resonator Markers", "command": self.open_attached_resonance_plotter})
+        button_specs.append({"text": "Analyze Resonator Shifts", "command": self.open_resonator_shift_window})
+        button_specs.append({"text": "Analyze Shift Correlation", "command": self.open_resonator_shift_correlation_window})
+        button_specs.append({"text": "Histogram df2-df1", "command": self.open_resonator_pair_dfdiff_hist_window})
+        button_specs.append({"text": "Mark Res. on Sel. Scans", "command": self.open_attached_resonance_editor})
+        button_specs.append(
+            {
+                "text": "Clear Selected Markers",
+                "command": self.clear_selected_scan_attachments,
+                "pady": (12, 2),
+            }
+        )
+
+        for idx, spec in enumerate(button_specs):
+            parent = button_parents[idx % 2]
+            button = spec.get("button")
+            if not isinstance(button, tk.Button):
+                button = tk.Button(
+                    parent,
+                    text=str(spec["text"]),
+                    width=button_width,
+                    command=spec["command"],
+                )
+            button.pack(anchor="w", pady=spec.get("pady", 2))
 
         tk.Label(right, text="Transcript:", anchor="w", justify="left").pack(anchor="w", pady=(0, 2))
         self.log_text = scrolledtext.ScrolledText(right, width=110, height=10, state="disabled")
@@ -410,6 +475,616 @@ class DataAnalysisGUI(
         self.log_text.insert("end", f"[{timestamp}] {message}\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _choose_one_selected_scan(self) -> Optional[VNAScan]:
+        scans = self._selected_scans()
+        if not scans:
+            messagebox.showwarning("No selection", "Select scans for analysis first.")
+            return None
+        if len(scans) == 1:
+            return scans[0]
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Choose Scan")
+        dialog.geometry("900x360")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Choose one of the currently selected scans:").pack(anchor="w", padx=10, pady=(10, 4))
+        listbox = tk.Listbox(dialog, width=130, height=12, selectmode=tk.SINGLE)
+        listbox.pack(fill="both", expand=True, padx=10)
+        for idx, scan in enumerate(scans):
+            group_text = f" | group {scan.plot_group}" if scan.plot_group is not None else ""
+            timestamp = f" | {scan.file_timestamp}" if str(scan.file_timestamp).strip() else ""
+            listbox.insert(idx, f"{Path(scan.filename).name}{group_text}{timestamp}")
+        listbox.selection_set(0)
+        listbox.focus_set()
+
+        chosen: dict[str, Optional[VNAScan]] = {"scan": None}
+
+        def accept() -> None:
+            selection = listbox.curselection()
+            if not selection:
+                messagebox.showwarning("No scan selected", "Choose one scan.", parent=dialog)
+                return
+            chosen["scan"] = scans[int(selection[0])]
+            dialog.destroy()
+
+        btns = tk.Frame(dialog)
+        btns.pack(fill="x", padx=10, pady=10)
+        tk.Button(btns, text="Cancel", width=12, command=dialog.destroy).pack(side="right")
+        tk.Button(btns, text="Open", width=12, command=accept).pack(side="right", padx=(0, 8))
+        listbox.bind("<Double-Button-1>", lambda _e: accept())
+        dialog.wait_window()
+        return chosen["scan"]
+
+    def _scan_evolution_make_stage(
+        self,
+        *,
+        name: str,
+        freq_hz: np.ndarray,
+        amp: np.ndarray,
+        phase_deg: np.ndarray,
+    ) -> Optional[dict]:
+        freq = np.asarray(freq_hz, dtype=float)
+        amp_arr = np.asarray(amp, dtype=float)
+        phase_arr = np.asarray(phase_deg, dtype=float)
+        if freq.ndim != 1 or amp_arr.ndim != 1 or phase_arr.ndim != 1:
+            return None
+        if freq.size == 0 or amp_arr.shape != freq.shape or phase_arr.shape != freq.shape:
+            return None
+        order = np.argsort(freq)
+        freq = freq[order]
+        amp_arr = amp_arr[order]
+        phase_arr = phase_arr[order]
+        real = amp_arr * np.cos(np.radians(phase_arr))
+        imag = amp_arr * np.sin(np.radians(phase_arr))
+        return {
+            "name": name,
+            "freq_hz": freq,
+            "freq_ghz": freq / 1.0e9,
+            "amp": amp_arr,
+            "phase_deg": phase_arr,
+            "real": real,
+            "imag": imag,
+        }
+
+    def _scan_evolution_phase_display(self, stage: dict) -> np.ndarray:
+        phase = np.asarray(stage["phase_deg"], dtype=float)
+        if self.scan_evolution_mod360_var is not None and self.scan_evolution_mod360_var.get():
+            return ((phase + 180.0) % 360.0) - 180.0
+        return phase
+
+    @staticmethod
+    def _scan_evolution_nearest_values(
+        query_freq_hz: Sequence[float],
+        ref_freq_hz: Sequence[float],
+        ref_values: Sequence[float],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        query = np.asarray(query_freq_hz, dtype=float).ravel()
+        ref_f = np.asarray(ref_freq_hz, dtype=float).ravel()
+        ref_v = np.asarray(ref_values, dtype=float).ravel()
+        if query.size == 0 or ref_f.size == 0 or ref_v.size == 0 or ref_f.size != ref_v.size:
+            return np.asarray([], dtype=float), np.asarray([], dtype=float)
+        idx = np.searchsorted(ref_f, query)
+        idx = np.clip(idx, 0, max(ref_f.size - 1, 0))
+        left = np.clip(idx - 1, 0, max(ref_f.size - 1, 0))
+        use_left = np.abs(query - ref_f[left]) <= np.abs(query - ref_f[idx])
+        chosen = np.where(use_left, left, idx)
+        return ref_f[chosen], ref_v[chosen]
+
+    def _scan_evolution_overlay_points(self, scan: VNAScan) -> dict[str, np.ndarray]:
+        cand = scan.candidate_resonators
+        gaussian = cand.get("gaussian_convolution", {})
+        dsdf = cand.get("dsdf_gaussian_convolution", {})
+        phase_points = cand.get("phase_class_points", {})
+        return {
+            "gaussian": np.asarray(gaussian.get("candidate_freq", np.array([])), dtype=float),
+            "dsdf": np.asarray(dsdf.get("candidate_freq", np.array([])), dtype=float),
+            "regular": np.asarray(phase_points.get("regular_freqs", np.array([])), dtype=float),
+            "congruent": np.asarray(phase_points.get("irregular_congruent_freqs", np.array([])), dtype=float),
+            "noncongruent": np.asarray(phase_points.get("irregular_noncongruent_freqs", np.array([])), dtype=float),
+        }
+
+    def _scan_evolution_attached_resonator_points(
+        self,
+        scan: VNAScan,
+        *,
+        phase_values: np.ndarray,
+        amp_values: np.ndarray,
+    ) -> tuple[list[dict], list[dict]]:
+        attached = scan.candidate_resonators.get("sheet_resonances", {})
+        assignments = attached.get("assignments") if isinstance(attached, dict) else {}
+        if not isinstance(assignments, dict):
+            return [], []
+        ref_freq_hz = np.asarray(scan.freq, dtype=float)
+        amp_ref = np.asarray(amp_values, dtype=float)
+        phase_ref = np.asarray(phase_values, dtype=float)
+        if ref_freq_hz.size == 0 or amp_ref.shape != ref_freq_hz.shape or phase_ref.shape != ref_freq_hz.shape:
+            return [], []
+        amp_points: list[dict] = []
+        phase_points: list[dict] = []
+        for resonator_number, record in assignments.items():
+            if not isinstance(record, dict):
+                continue
+            try:
+                target_hz = float(record.get("frequency_hz"))
+            except Exception:
+                continue
+            x_hz_amp, y_amp = self._scan_evolution_nearest_values([target_hz], ref_freq_hz, amp_ref)
+            x_hz_phase, y_phase = self._scan_evolution_nearest_values([target_hz], ref_freq_hz, phase_ref)
+            if x_hz_amp.size:
+                amp_points.append({"x_hz": float(x_hz_amp[0]), "y": float(y_amp[0]), "label": str(resonator_number)})
+            if x_hz_phase.size:
+                phase_points.append({"x_hz": float(x_hz_phase[0]), "y": float(y_phase[0]), "label": str(resonator_number)})
+        return amp_points, phase_points
+
+    def _scan_evolution_add_overlays(
+        self,
+        ax,
+        scan: VNAScan,
+        *,
+        values: np.ndarray,
+        use_phase: bool,
+        used_labels: set[str],
+    ) -> None:
+        ref_freq_hz = np.asarray(scan.freq, dtype=float)
+        ref_y = np.asarray(values, dtype=float)
+        marker_defs = [
+            (
+                self.scan_evolution_show_gaussian_var is not None and bool(self.scan_evolution_show_gaussian_var.get()),
+                "gaussian",
+                dict(linestyle="none", marker="o", markersize=8, markerfacecolor="none", markeredgewidth=1.5, color="green"),
+                "Gaussian candidates",
+            ),
+            (
+                self.scan_evolution_show_dsdf_var is not None and bool(self.scan_evolution_show_dsdf_var.get()),
+                "dsdf",
+                dict(linestyle="none", marker="D", markersize=6, color="red"),
+                "dS21/df peaks",
+            ),
+            (
+                self.scan_evolution_show_phase_2pi_var is not None and bool(self.scan_evolution_show_phase_2pi_var.get()),
+                "regular",
+                dict(linestyle="none", marker="o", markersize=4, color="black"),
+                "2pi phase corrections",
+            ),
+            (
+                self.scan_evolution_show_phase_vna_var is not None and bool(self.scan_evolution_show_phase_vna_var.get()),
+                "congruent",
+                dict(linestyle="none", marker="o", markersize=5, color="pink"),
+                "VNA phase corrections",
+            ),
+            (
+                self.scan_evolution_show_phase_other_var is not None and bool(self.scan_evolution_show_phase_other_var.get()),
+                "noncongruent",
+                dict(linestyle="none", marker="o", markersize=5, color="blue"),
+                "Other phase discontinuities",
+            ),
+        ]
+        points = self._scan_evolution_overlay_points(scan)
+        for enabled, key, style, label in marker_defs:
+            if not enabled:
+                continue
+            freq_pts = points[key]
+            if freq_pts.size == 0:
+                continue
+            x_hz, y_pts = self._scan_evolution_nearest_values(freq_pts, ref_freq_hz, ref_y)
+            if x_hz.size == 0:
+                continue
+            plot_label = label if label not in used_labels else None
+            ax.plot(x_hz / 1.0e9, y_pts, label=plot_label, **style)
+            if plot_label is not None:
+                used_labels.add(label)
+
+    def _scan_evolution_toggle_phase_wrap(self) -> None:
+        if self.scan_evolution_figure is None or self.scan_evolution_canvas is None:
+            return
+        self._render_scan_evolution_window()
+
+    def _scan_evolution_stage_rows_for_scan(self, scan: VNAScan) -> list[dict]:
+        stages: list[dict] = []
+        raw_stage = self._scan_evolution_make_stage(
+            name="Raw",
+            freq_hz=scan.freq,
+            amp=scan.amplitude(),
+            phase_deg=scan.phase_deg_wrapped_raw(),
+        )
+        if raw_stage is not None:
+            stages.append(raw_stage)
+
+        if scan.has_dewrapped_phase():
+            stage = self._scan_evolution_make_stage(
+                name="Phase Corr. 1",
+                freq_hz=scan.freq,
+                amp=scan.amplitude(),
+                phase_deg=scan.phase_deg_unwrapped(),
+            )
+            if stage is not None:
+                stages.append(stage)
+
+        phase2 = scan.candidate_resonators.get("phase_correction_2", {})
+        amp2, phase2_deg = _read_polar_series(
+            phase2,
+            amplitude_key="corrected_amp",
+            phase_key="corrected_phase_deg",
+        )
+        stage = self._scan_evolution_make_stage(
+            name="Phase Corr. 2",
+            freq_hz=scan.freq,
+            amp=amp2,
+            phase_deg=phase2_deg,
+        )
+        if stage is not None:
+            stages.append(stage)
+
+        phase3 = scan.candidate_resonators.get("phase_correction_3", {})
+        amp3, phase3_deg = _read_polar_series(
+            phase3,
+            amplitude_key="corrected_amp",
+            phase_key="corrected_phase_deg",
+        )
+        stage = self._scan_evolution_make_stage(
+            name="Phase Corr. 3",
+            freq_hz=scan.freq,
+            amp=amp3,
+            phase_deg=phase3_deg,
+        )
+        if stage is not None:
+            stages.append(stage)
+
+        bf = scan.baseline_filter if isinstance(scan.baseline_filter, dict) else {}
+        norm = bf.get("normalized", {}) if isinstance(bf, dict) else {}
+        norm_amp, norm_phase = _read_polar_series(
+            norm,
+            amplitude_key="norm_amp",
+            phase_key="norm_phase_deg_unwrapped",
+        )
+        stage = self._scan_evolution_make_stage(
+            name="Normalized",
+            freq_hz=scan.freq,
+            amp=norm_amp,
+            phase_deg=norm_phase,
+        )
+        if stage is not None:
+            stages.append(stage)
+
+        return stages
+
+    def open_scan_evolution_window(self) -> None:
+        scan = self._choose_one_selected_scan()
+        if scan is None:
+            return
+
+        if self.scan_evolution_window is not None and self.scan_evolution_window.winfo_exists():
+            self.scan_evolution_window.lift()
+            self._scan_evolution_scan_key = self._scan_key(scan)
+            self._render_scan_evolution_window()
+            return
+
+        self.scan_evolution_window = tk.Toplevel(self.root)
+        self.scan_evolution_window.title("Scan Evolution")
+        self.scan_evolution_window.geometry("1500x980")
+        self.scan_evolution_window.protocol("WM_DELETE_WINDOW", self._close_scan_evolution_window)
+        self._scan_evolution_scan_key = self._scan_key(scan)
+
+        controls = tk.Frame(self.scan_evolution_window, padx=8, pady=8)
+        controls.pack(side="top", fill="x")
+        self.scan_evolution_status_var = tk.StringVar(value="Showing selected scan evolution.")
+        self.scan_evolution_mod360_var = tk.BooleanVar(value=True)
+        self.scan_evolution_show_gaussian_var = tk.BooleanVar(value=False)
+        self.scan_evolution_show_dsdf_var = tk.BooleanVar(value=False)
+        self.scan_evolution_show_phase_2pi_var = tk.BooleanVar(value=False)
+        self.scan_evolution_show_phase_vna_var = tk.BooleanVar(value=False)
+        self.scan_evolution_show_phase_other_var = tk.BooleanVar(value=False)
+        self.scan_evolution_show_attached_res_var = tk.BooleanVar(value=False)
+        tk.Label(controls, textvariable=self.scan_evolution_status_var, anchor="w").pack(
+            side="left", fill="x", expand=True
+        )
+        marker_controls = tk.Frame(self.scan_evolution_window, padx=8, pady=0)
+        marker_controls.pack(side="top", fill="x")
+        tk.Checkbutton(
+            controls,
+            text="Mod 360 phase",
+            variable=self.scan_evolution_mod360_var,
+            command=self._scan_evolution_toggle_phase_wrap,
+        ).pack(side="right", padx=(0, 8))
+        tk.Button(controls, text="Choose Scan", width=12, command=self._scan_evolution_choose_scan).pack(
+            side="right"
+        )
+        tk.Button(controls, text="Reset View", width=12, command=self._scan_evolution_reset_view).pack(
+            side="right", padx=(0, 8)
+        )
+        for text, var in (
+            ("Gaussian", self.scan_evolution_show_gaussian_var),
+            ("dS21/df", self.scan_evolution_show_dsdf_var),
+            ("2pi", self.scan_evolution_show_phase_2pi_var),
+            ("VNA phase", self.scan_evolution_show_phase_vna_var),
+            ("Other phase", self.scan_evolution_show_phase_other_var),
+            ("Resonators", self.scan_evolution_show_attached_res_var),
+        ):
+            tk.Checkbutton(
+                marker_controls,
+                text=text,
+                variable=var,
+                command=self._render_scan_evolution_window,
+            ).pack(side="left", padx=(0, 8))
+
+        self.scan_evolution_figure = Figure(figsize=(14, 9))
+        self.scan_evolution_canvas = FigureCanvasTkAgg(self.scan_evolution_figure, master=self.scan_evolution_window)
+        self.scan_evolution_toolbar = NavigationToolbar2Tk(self.scan_evolution_canvas, self.scan_evolution_window)
+        self.scan_evolution_toolbar.update()
+        self.scan_evolution_toolbar.pack(side="top", fill="x")
+        self.scan_evolution_canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        self._render_scan_evolution_window()
+
+    def _scan_evolution_choose_scan(self) -> None:
+        scan = self._choose_one_selected_scan()
+        if scan is None:
+            return
+        self._scan_evolution_scan_key = self._scan_key(scan)
+        self._render_scan_evolution_window()
+
+    def _close_scan_evolution_window(self) -> None:
+        if self.scan_evolution_window is not None and self.scan_evolution_window.winfo_exists():
+            self.scan_evolution_window.destroy()
+        self.scan_evolution_window = None
+        self.scan_evolution_canvas = None
+        self.scan_evolution_toolbar = None
+        self.scan_evolution_figure = None
+        self.scan_evolution_status_var = None
+        self.scan_evolution_mod360_var = None
+        self.scan_evolution_show_gaussian_var = None
+        self.scan_evolution_show_dsdf_var = None
+        self.scan_evolution_show_phase_2pi_var = None
+        self.scan_evolution_show_phase_vna_var = None
+        self.scan_evolution_show_phase_other_var = None
+        self.scan_evolution_show_attached_res_var = None
+        self._scan_evolution_scan_key = None
+        self._scan_evolution_stage_rows = []
+        self._scan_evolution_axes_rows = []
+        self._scan_evolution_syncing_xlim = False
+
+    def _scan_evolution_current_scan(self) -> Optional[VNAScan]:
+        if self._scan_evolution_scan_key is None:
+            return None
+        for scan in self.dataset.vna_scans:
+            if self._scan_key(scan) == self._scan_evolution_scan_key:
+                return scan
+        return None
+
+    def _scan_evolution_visible_xlim(self) -> Optional[tuple[float, float]]:
+        if not self._scan_evolution_axes_rows:
+            return None
+        ax_amp = self._scan_evolution_axes_rows[0][0]
+        try:
+            x0, x1 = ax_amp.get_xlim()
+        except Exception:
+            return None
+        return (float(x0), float(x1)) if float(x0) <= float(x1) else (float(x1), float(x0))
+
+    def _scan_evolution_autoscale_amp_phase(self) -> None:
+        xlim = self._scan_evolution_visible_xlim()
+        if xlim is None:
+            return
+        lo, hi = xlim
+        for stage, (ax_amp, ax_phase, _ax_complex) in zip(self._scan_evolution_stage_rows, self._scan_evolution_axes_rows):
+            mask = np.isfinite(stage["freq_ghz"]) & (stage["freq_ghz"] >= lo) & (stage["freq_ghz"] <= hi)
+            if np.any(mask):
+                amp = np.asarray(stage["amp"], dtype=float)[mask]
+                phase = self._scan_evolution_phase_display(stage)[mask]
+                if amp.size:
+                    amp_min = float(np.min(amp))
+                    amp_max = float(np.max(amp))
+                    amp_pad = 1.0 if amp_max <= amp_min else 0.05 * (amp_max - amp_min)
+                    ax_amp.set_ylim(amp_min - amp_pad, amp_max + amp_pad)
+                if phase.size:
+                    if self.scan_evolution_mod360_var is not None and self.scan_evolution_mod360_var.get():
+                        ax_phase.set_ylim(-180.0, 180.0)
+                    else:
+                        ph_min = float(np.min(phase))
+                        ph_max = float(np.max(phase))
+                        ph_pad = 1.0 if ph_max <= ph_min else 0.05 * (ph_max - ph_min)
+                        ax_phase.set_ylim(ph_min - ph_pad, ph_max + ph_pad)
+
+    def _scan_evolution_update_complex_axes(self) -> None:
+        xlim = self._scan_evolution_visible_xlim()
+        if xlim is None:
+            return
+        lo, hi = xlim
+        for stage, (_ax_amp, _ax_phase, ax_complex) in zip(self._scan_evolution_stage_rows, self._scan_evolution_axes_rows):
+            ax_complex.clear()
+            mask = np.isfinite(stage["freq_ghz"]) & (stage["freq_ghz"] >= lo) & (stage["freq_ghz"] <= hi)
+            if np.any(mask):
+                real = np.asarray(stage["real"], dtype=float)[mask]
+                imag = np.asarray(stage["imag"], dtype=float)[mask]
+                ax_complex.plot(real, imag, color="tab:green", linewidth=1.0)
+                ax_complex.set_aspect("equal", adjustable="box")
+                re_min = float(np.min(real))
+                re_max = float(np.max(real))
+                im_min = float(np.min(imag))
+                im_max = float(np.max(imag))
+                re_pad = 1.0 if re_max <= re_min else 0.05 * (re_max - re_min)
+                im_pad = 1.0 if im_max <= im_min else 0.05 * (im_max - im_min)
+                ax_complex.set_xlim(re_min - re_pad, re_max + re_pad)
+                ax_complex.set_ylim(im_min - im_pad, im_max + im_pad)
+            else:
+                ax_complex.text(0.5, 0.5, "No data in range", ha="center", va="center", transform=ax_complex.transAxes)
+            ax_complex.grid(True, alpha=0.3)
+            ax_complex.set_xlabel("Real(S21)")
+            ax_complex.set_ylabel("Imag(S21)")
+
+    def _scan_evolution_on_xlim_changed(self, changed_ax) -> None:
+        if self._scan_evolution_syncing_xlim:
+            return
+        try:
+            xlim = changed_ax.get_xlim()
+        except Exception:
+            return
+        self._scan_evolution_syncing_xlim = True
+        try:
+            for ax_amp, ax_phase, _ax_complex in self._scan_evolution_axes_rows:
+                if ax_amp is not changed_ax:
+                    ax_amp.set_xlim(xlim)
+                if ax_phase is not changed_ax:
+                    ax_phase.set_xlim(xlim)
+            self._scan_evolution_autoscale_amp_phase()
+            self._scan_evolution_update_complex_axes()
+        finally:
+            self._scan_evolution_syncing_xlim = False
+        if self.scan_evolution_canvas is not None:
+            self.scan_evolution_canvas.draw_idle()
+
+    def _scan_evolution_reset_view(self) -> None:
+        if not self._scan_evolution_axes_rows or not self._scan_evolution_stage_rows:
+            return
+        freq_min = min(float(stage["freq_ghz"][0]) for stage in self._scan_evolution_stage_rows)
+        freq_max = max(float(stage["freq_ghz"][-1]) for stage in self._scan_evolution_stage_rows)
+        x_pad = max((freq_max - freq_min) * 0.01, 1e-6)
+        xlim = (freq_min - x_pad, freq_max + x_pad)
+        self._scan_evolution_syncing_xlim = True
+        try:
+            for ax_amp, ax_phase, _ax_complex in self._scan_evolution_axes_rows:
+                ax_amp.set_xlim(xlim)
+                ax_phase.set_xlim(xlim)
+        finally:
+            self._scan_evolution_syncing_xlim = False
+        self._scan_evolution_autoscale_amp_phase()
+        self._scan_evolution_update_complex_axes()
+        if self.scan_evolution_canvas is not None:
+            self.scan_evolution_canvas.draw_idle()
+
+    def _render_scan_evolution_window(self) -> None:
+        if self.scan_evolution_figure is None or self.scan_evolution_canvas is None:
+            return
+        scan = self._scan_evolution_current_scan()
+        if scan is None:
+            return
+        prior_limits: list[tuple[tuple[float, float], tuple[float, float], tuple[float, float]]] = []
+        for ax_amp, ax_phase, ax_complex in self._scan_evolution_axes_rows:
+            try:
+                prior_limits.append(
+                    (
+                        tuple(ax_amp.get_xlim()),
+                        tuple(ax_amp.get_ylim()),
+                        tuple(ax_phase.get_ylim()),
+                    )
+                )
+            except Exception:
+                prior_limits = []
+                break
+        stages = self._scan_evolution_stage_rows_for_scan(scan)
+        self._scan_evolution_stage_rows = stages
+        self._scan_evolution_axes_rows = []
+        self.scan_evolution_figure.clear()
+        if not stages:
+            ax = self.scan_evolution_figure.add_subplot(111)
+            ax.text(0.5, 0.5, "No attached processing stages available for this scan.", ha="center", va="center")
+            ax.axis("off")
+            self.scan_evolution_canvas.draw_idle()
+            return
+
+        nrows = len(stages)
+        axes = np.atleast_2d(self.scan_evolution_figure.subplots(nrows, 3, sharex=False, squeeze=False))
+        used_overlay_labels: set[str] = set()
+        used_res_labels: set[str] = set()
+        for row_idx, stage in enumerate(stages):
+            ax_amp = axes[row_idx, 0]
+            ax_phase = axes[row_idx, 1]
+            ax_complex = axes[row_idx, 2]
+            phase_display = self._scan_evolution_phase_display(stage)
+            ax_amp.plot(stage["freq_ghz"], stage["amp"], color="tab:blue", linewidth=1.0)
+            ax_phase.plot(stage["freq_ghz"], phase_display, color="tab:orange", linewidth=1.0)
+            self._scan_evolution_add_overlays(
+                ax_amp,
+                scan,
+                values=np.asarray(stage["amp"], dtype=float),
+                use_phase=False,
+                used_labels=used_overlay_labels,
+            )
+            self._scan_evolution_add_overlays(
+                ax_phase,
+                scan,
+                values=phase_display,
+                use_phase=True,
+                used_labels=used_overlay_labels,
+            )
+            if self.scan_evolution_show_attached_res_var is not None and bool(self.scan_evolution_show_attached_res_var.get()):
+                amp_points, phase_points = self._scan_evolution_attached_resonator_points(
+                    scan,
+                    phase_values=phase_display,
+                    amp_values=np.asarray(stage["amp"], dtype=float),
+                )
+                if amp_points:
+                    ax_amp.plot(
+                        [pt["x_hz"] / 1.0e9 for pt in amp_points],
+                        [pt["y"] for pt in amp_points],
+                        linestyle="none",
+                        marker="s",
+                        markersize=5,
+                        color="black",
+                        label=("Attached resonators" if "Attached resonators" not in used_res_labels else None),
+                    )
+                    used_res_labels.add("Attached resonators")
+                if phase_points:
+                    ax_phase.plot(
+                        [pt["x_hz"] / 1.0e9 for pt in phase_points],
+                        [pt["y"] for pt in phase_points],
+                        linestyle="none",
+                        marker="s",
+                        markersize=5,
+                        color="black",
+                        label=("Attached resonators" if "Attached resonators" not in used_res_labels else None),
+                    )
+                    used_res_labels.add("Attached resonators")
+            ax_amp.grid(True, alpha=0.3)
+            ax_phase.grid(True, alpha=0.3)
+            ax_amp.set_ylabel(f"{stage['name']}\nAmplitude")
+            ax_phase.set_ylabel("Phase (deg)")
+            if row_idx == 0 and (used_overlay_labels or used_res_labels):
+                ax_amp.legend(loc="best", fontsize=8)
+                ax_phase.legend(loc="best", fontsize=8)
+            if row_idx == 0:
+                ax_amp.set_title("Amplitude", fontsize=11)
+                ax_phase.set_title("Phase", fontsize=11)
+                ax_complex.set_title("Complex Plane", fontsize=11)
+            if row_idx == nrows - 1:
+                ax_amp.set_xlabel("Frequency (GHz)")
+                ax_phase.set_xlabel("Frequency (GHz)")
+            self._scan_evolution_axes_rows.append((ax_amp, ax_phase, ax_complex))
+
+        self.scan_evolution_figure.suptitle(
+            f"Scan Evolution | {Path(scan.filename).name}",
+            fontsize=12,
+        )
+        self.scan_evolution_figure.tight_layout()
+
+        for ax_amp, ax_phase, _ax_complex in self._scan_evolution_axes_rows:
+            ax_amp.callbacks.connect("xlim_changed", self._scan_evolution_on_xlim_changed)
+            ax_phase.callbacks.connect("xlim_changed", self._scan_evolution_on_xlim_changed)
+
+        if len(prior_limits) == len(self._scan_evolution_axes_rows):
+            self._scan_evolution_syncing_xlim = True
+            try:
+                for (ax_amp, ax_phase, _ax_complex), (xlim, amp_ylim, phase_ylim) in zip(
+                    self._scan_evolution_axes_rows,
+                    prior_limits,
+                ):
+                    ax_amp.set_xlim(xlim)
+                    ax_phase.set_xlim(xlim)
+                    ax_amp.set_ylim(amp_ylim)
+                    ax_phase.set_ylim(phase_ylim)
+            finally:
+                self._scan_evolution_syncing_xlim = False
+            self._scan_evolution_update_complex_axes()
+            self.scan_evolution_canvas.draw_idle()
+        else:
+            self._scan_evolution_reset_view()
+        if self.scan_evolution_status_var is not None:
+            self.scan_evolution_status_var.set(
+                f"Showing {len(stages)} stage(s) for {Path(scan.filename).name}. Zoom amplitude or phase to update all panels."
+            )
 
     def _reload_transcript_ui(self) -> None:
         self.log_text.configure(state="normal")
@@ -1285,81 +1960,92 @@ class DataAnalysisGUI(
         tk.Button(btns, text="Clear Attachments", command=do_clear).pack(side="right", padx=(0, 8))
 
     def open_resonance_sheet_loader(self) -> None:
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Load Resonators From Sheet")
-        dialog.geometry("860x190")
-        dialog.transient(self.root)
-        dialog.grab_set()
+        path_text = filedialog.askopenfilename(
+            parent=self.root,
+            title="Select resonance spreadsheet",
+            filetypes=[("Excel files", "*.xlsx *.xlsm"), ("All files", "*.*")],
+        )
+        if not path_text:
+            return
+        sheet_path = Path(path_text)
+        if not sheet_path.exists():
+            messagebox.showwarning("Missing file", "Select a valid spreadsheet file first.", parent=self.root)
+            return
+        try:
+            loaded_count = self._load_resonances_from_sheet(sheet_path)
+        except Exception as exc:
+            self._log(f"Load resonators from sheet failed: {exc}")
+            messagebox.showerror("Load failed", str(exc), parent=self.root)
+            return
+        messagebox.showinfo(
+            "Resonators loaded",
+            f"Loaded {loaded_count} resonator assignment(s) from:\n{sheet_path}",
+            parent=self.root,
+        )
 
-        path_var = tk.StringVar()
-
-        def browse() -> None:
-            chosen = filedialog.askopenfilename(
-                title="Select resonance spreadsheet",
-                filetypes=[("Excel files", "*.xlsx *.xlsm"), ("All files", "*.*")],
-            )
-            if chosen:
-                path_var.set(chosen)
-
-        def run() -> None:
-            sheet_path = Path(path_var.get().strip())
-            if not sheet_path.exists():
-                messagebox.showwarning("Missing file", "Select a valid spreadsheet file first.", parent=dialog)
-                return
-            try:
-                loaded_count = self._load_resonances_from_sheet(sheet_path)
-            except Exception as exc:
-                self._log(f"Load resonators from sheet failed: {exc}")
-                messagebox.showerror("Load failed", str(exc), parent=dialog)
-                return
-            messagebox.showinfo(
-                "Resonators loaded",
-                f"Loaded {loaded_count} resonator assignment(s) from:\n{sheet_path}",
-                parent=dialog,
-            )
-            dialog.destroy()
-
-        top = tk.Frame(dialog, padx=10, pady=10)
-        top.pack(fill="both", expand=True)
-        tk.Label(
-            top,
-            text="Select an Excel sheet where row 1 contains resonator numbers, row 2 contains headings, column A from row 3 down contains a VNA filename or group name, and the remaining cells contain resonance frequencies. The resonator assignments will be attached to the matching VNA scans and saved into the dataset.",
-            anchor="w",
-            justify="left",
-            wraplength=820,
-        ).pack(anchor="w", pady=(0, 8))
-
-        row = tk.Frame(top)
-        row.pack(fill="x", pady=(0, 8))
-        tk.Entry(row, textvariable=path_var, width=95).pack(side="left", fill="x", expand=True)
-        tk.Button(row, text="Browse", width=10, command=browse).pack(side="left", padx=(8, 0))
-
-        btns = tk.Frame(top)
-        btns.pack(fill="x", pady=(12, 0))
-        tk.Button(btns, text="Cancel", width=12, command=dialog.destroy).pack(side="right")
-        tk.Button(btns, text="Load Resonators", width=14, command=run).pack(side="right", padx=(0, 8))
+    def open_resonance_sheet_saver(self) -> None:
+        path_text = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Save resonance spreadsheet",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+        )
+        if not path_text:
+            return
+        sheet_path = Path(path_text)
+        if str(sheet_path).strip() == "":
+            messagebox.showwarning("Missing file", "Select an output spreadsheet path first.", parent=self.root)
+            return
+        try:
+            saved_count = self._save_resonances_to_sheet(sheet_path)
+        except Exception as exc:
+            self._log(f"Save resonators to sheet failed: {exc}")
+            messagebox.showerror("Save failed", str(exc), parent=self.root)
+            return
+        messagebox.showinfo(
+            "Resonators saved",
+            f"Saved {saved_count} resonator assignment(s) to:\n{sheet_path}",
+            parent=self.root,
+        )
 
     def open_attached_resonance_plotter(self) -> None:
         dialog = tk.Toplevel(self.root)
-        dialog.title("Plot Attached Resonators")
-        dialog.geometry("720x170")
+        dialog.title("Plot Resonator Markers")
+        dialog.geometry("760x150")
         dialog.transient(self.root)
         dialog.grab_set()
+        status_var = tk.StringVar(value="Ready to generate PDF.")
 
-        data_mode_var = tk.StringVar(value="normalized")
+        generate_button = None
 
         def run() -> None:
+            if generate_button is not None:
+                generate_button.configure(state="disabled")
+            status_var.set("Preparing pages...")
+            dialog.update_idletasks()
+
+            def on_progress(completed: int, total: int) -> None:
+                status_var.set(f"Generating page {completed} of {total}...")
+                dialog.update_idletasks()
+
             try:
-                saved = self._plot_attached_resonances(data_mode=data_mode_var.get())
+                saved = self._plot_attached_resonances(progress_callback=on_progress)
             except Exception as exc:
-                self._log(f"Plot attached resonators failed: {exc}")
+                if generate_button is not None:
+                    generate_button.configure(state="normal")
+                status_var.set("PDF generation failed.")
+                self._log(f"Plot resonator markers failed: {exc}")
                 messagebox.showerror("Plot failed", str(exc), parent=dialog)
                 return
             if not saved:
+                if generate_button is not None:
+                    generate_button.configure(state="normal")
+                status_var.set("No PDF was generated.")
                 messagebox.showwarning("No plots saved", "No plot files were generated.", parent=dialog)
                 return
             out_dir = saved[0].parent
-            self._log(f"Plotted attached resonators into {out_dir}")
+            status_var.set("PDF generation complete.")
+            self._log(f"Plotted resonator markers into {out_dir}")
             messagebox.showinfo(
                 "Plots saved",
                 f"Saved {len(saved)} plot file(s) to:\n{out_dir}",
@@ -1371,32 +2057,1367 @@ class DataAnalysisGUI(
         top.pack(fill="both", expand=True)
         tk.Label(
             top,
-            text="Plot the resonator assignments currently attached to the loaded VNA scans.",
+            text="Generate a single PDF using the same grouped resonator-marker view as the editor: one full-span page plus overlapping 100 MHz zoom pages.",
             anchor="w",
             justify="left",
-            wraplength=680,
+            wraplength=720,
         ).pack(anchor="w", pady=(0, 8))
-
-        mode_row = tk.Frame(top)
-        mode_row.pack(fill="x", pady=(0, 8))
-        tk.Label(mode_row, text="Plot data:").pack(side="left")
-        tk.Radiobutton(
-            mode_row,
-            text="Baseline normalized (default)",
-            variable=data_mode_var,
-            value="normalized",
-        ).pack(side="left", padx=(8, 12))
-        tk.Radiobutton(
-            mode_row,
-            text="Raw VNA data",
-            variable=data_mode_var,
-            value="raw",
-        ).pack(side="left")
+        tk.Label(top, textvariable=status_var, anchor="w", justify="left").pack(anchor="w")
 
         btns = tk.Frame(top)
         btns.pack(fill="x", pady=(12, 0))
         tk.Button(btns, text="Cancel", width=12, command=dialog.destroy).pack(side="right")
-        tk.Button(btns, text="Generate Plots", width=14, command=run).pack(side="right", padx=(0, 8))
+        generate_button = tk.Button(btns, text="Generate PDF", width=14, command=run)
+        generate_button.pack(side="right", padx=(0, 8))
+
+    @staticmethod
+    def _resonator_shift_test_sort_stamp(scan: VNAScan) -> str:
+        text = str(getattr(scan, "file_timestamp", "") or "").strip()
+        if text:
+            return text
+        return str(getattr(scan, "loaded_at", "") or "").strip()
+
+    @staticmethod
+    def _resonator_shift_test_date_label(scan: VNAScan) -> str:
+        stamp = DataAnalysisGUI._resonator_shift_test_sort_stamp(scan)
+        if stamp:
+            return stamp.split("T", 1)[0]
+        return "unknown date"
+
+    def _resonator_shift_test_units(self) -> list[dict]:
+        scans = self._selected_scans()
+        if not scans:
+            raise ValueError("No scans are selected for analysis.")
+
+        units_by_key: dict[tuple[str, object], dict] = {}
+        ordered_keys: list[tuple[str, object]] = []
+        for scan_index, scan in enumerate(scans):
+            payload = scan.candidate_resonators.get("sheet_resonances")
+            if not isinstance(payload, dict):
+                continue
+            assignments = payload.get("assignments")
+            if not isinstance(assignments, dict):
+                continue
+            if scan.plot_group is not None:
+                unit_key: tuple[str, object] = ("group", int(scan.plot_group))
+                detail_label = f"Group {int(scan.plot_group)}"
+            else:
+                unit_key = ("scan", self._scan_key(scan))
+                detail_label = Path(scan.filename).name
+            unit = units_by_key.get(unit_key)
+            if unit is None:
+                sort_stamp = self._resonator_shift_test_sort_stamp(scan)
+                unit = {
+                    "key": unit_key,
+                    "sort_stamp": sort_stamp,
+                    "order_index": scan_index,
+                    "date_label": self._resonator_shift_test_date_label(scan),
+                    "detail_label": detail_label,
+                    "resonator_lists": {},
+                }
+                units_by_key[unit_key] = unit
+                ordered_keys.append(unit_key)
+            else:
+                sort_stamp = self._resonator_shift_test_sort_stamp(scan)
+                if sort_stamp and (not unit["sort_stamp"] or sort_stamp < unit["sort_stamp"]):
+                    unit["sort_stamp"] = sort_stamp
+                    unit["date_label"] = self._resonator_shift_test_date_label(scan)
+
+            freq = np.asarray(scan.freq, dtype=float)
+            if freq.size == 0:
+                continue
+            freq_min = float(np.min(freq))
+            freq_max = float(np.max(freq))
+            resonator_lists = unit["resonator_lists"]
+            for resonator_number, record in assignments.items():
+                if not isinstance(record, dict):
+                    continue
+                try:
+                    target_hz = float(record.get("frequency_hz"))
+                except Exception:
+                    continue
+                if not np.isfinite(target_hz) or not (freq_min <= target_hz <= freq_max):
+                    continue
+                resonator_label = str(resonator_number).strip()
+                if not resonator_label:
+                    continue
+                resonator_lists.setdefault(resonator_label, []).append(target_hz)
+
+        units: list[dict] = []
+        for unit_key in ordered_keys:
+            unit = units_by_key[unit_key]
+            resonators: dict[str, float] = {}
+            for resonator_label, values in unit["resonator_lists"].items():
+                arr = np.asarray(values, dtype=float)
+                arr = arr[np.isfinite(arr)]
+                if arr.size:
+                    resonators[resonator_label] = float(np.mean(arr))
+            if not resonators:
+                continue
+            units.append(
+                {
+                    "key": unit["key"],
+                    "sort_stamp": str(unit["sort_stamp"]),
+                    "order_index": int(unit["order_index"]),
+                    "date_label": str(unit["date_label"]),
+                    "detail_label": str(unit["detail_label"]),
+                    "label": f"{unit['date_label']} | {unit['detail_label']}",
+                    "resonators": resonators,
+                }
+            )
+
+        units.sort(key=lambda item: (str(item["sort_stamp"]), int(item["order_index"])))
+        return units
+
+    def _resonator_shift_plot_data(self) -> tuple[list[dict], list[dict], dict[str, float]]:
+        tests = self._resonator_shift_test_units()
+        if len(tests) < 2:
+            raise ValueError("At least two selected test dates with marked resonators are required.")
+
+        mean_freq_by_resonator: dict[str, float] = {}
+        values_by_resonator: dict[str, list[float]] = {}
+        for test in tests:
+            for resonator_label, freq_hz in test["resonators"].items():
+                values_by_resonator.setdefault(resonator_label, []).append(float(freq_hz))
+        for resonator_label, values in values_by_resonator.items():
+            arr = np.asarray(values, dtype=float)
+            arr = arr[np.isfinite(arr)]
+            if arr.size:
+                mean_freq_by_resonator[resonator_label] = float(np.mean(arr))
+
+        pair_count = len(tests) - 1
+        colors = plt.cm.rainbow(np.linspace(0.0, 1.0, max(pair_count, 1)))
+        series: list[dict] = []
+        points: list[dict] = []
+        for pair_idx in range(pair_count):
+            left = tests[pair_idx]
+            right = tests[pair_idx + 1]
+            color = colors[pair_idx]
+            pair_label = f"{left['date_label']} -> {right['date_label']}"
+            series.append(
+                {
+                    "pair_idx": pair_idx,
+                    "label": pair_label,
+                    "color": color,
+                    "left_label": left["label"],
+                    "right_label": right["label"],
+                }
+            )
+            shared = sorted(
+                set(left["resonators"]).intersection(right["resonators"]),
+                key=self._resonator_sort_key,
+            )
+            for resonator_label in shared:
+                mean_freq_hz = float(mean_freq_by_resonator.get(resonator_label, np.nan))
+                if not np.isfinite(mean_freq_hz) or mean_freq_hz == 0.0:
+                    continue
+                left_hz = float(left["resonators"][resonator_label])
+                right_hz = float(right["resonators"][resonator_label])
+                delta_rel = (right_hz - left_hz) / mean_freq_hz
+                points.append(
+                    {
+                        "pair_idx": pair_idx,
+                        "pair_label": pair_label,
+                        "left_label": left["label"],
+                        "right_label": right["label"],
+                        "resonator_number": resonator_label,
+                        "mean_freq_hz": mean_freq_hz,
+                        "delta_rel": float(delta_rel),
+                    }
+                )
+
+        if not points:
+            raise ValueError("No resonators were found on consecutive selected test dates.")
+        return tests, series, points
+
+    def open_resonator_shift_window(self) -> None:
+        if self.res_shift_window is not None and self.res_shift_window.winfo_exists():
+            self.res_shift_window.lift()
+            self._render_resonator_shift_window()
+            return
+
+        self.res_shift_window = tk.Toplevel(self.root)
+        self.res_shift_window.title("Resonator Frequency Shifts")
+        self.res_shift_window.geometry("1320x860")
+        self.res_shift_window.protocol("WM_DELETE_WINDOW", self._close_resonator_shift_window)
+
+        controls = tk.Frame(self.res_shift_window, padx=8, pady=8)
+        controls.pack(side="top", fill="x")
+        self.res_shift_status_var = tk.StringVar(value="Showing df/f between consecutive selected tests.")
+        self.res_shift_show_labels_var = tk.BooleanVar(value=False)
+        self.res_shift_connect_var = tk.BooleanVar(value=False)
+        tk.Label(controls, textvariable=self.res_shift_status_var, anchor="w").pack(
+            side="left", fill="x", expand=True
+        )
+        tk.Checkbutton(
+            controls,
+            text="Connect same resonator",
+            variable=self.res_shift_connect_var,
+            command=self._render_resonator_shift_window,
+        ).pack(side="right", padx=(0, 8))
+        tk.Checkbutton(
+            controls,
+            text="Show resonator numbers",
+            variable=self.res_shift_show_labels_var,
+            command=self._render_resonator_shift_window,
+        ).pack(side="right")
+        tk.Button(controls, text="Refresh", width=10, command=self._render_resonator_shift_window).pack(
+            side="right", padx=(0, 8)
+        )
+
+        self.res_shift_figure = Figure(figsize=(12, 7))
+        self.res_shift_canvas = FigureCanvasTkAgg(self.res_shift_figure, master=self.res_shift_window)
+        self.res_shift_toolbar = NavigationToolbar2Tk(self.res_shift_canvas, self.res_shift_window)
+        self.res_shift_toolbar.update()
+        self.res_shift_toolbar.pack(side="top", fill="x")
+        self.res_shift_canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        self._render_resonator_shift_window()
+
+    def _close_resonator_shift_window(self) -> None:
+        if self.res_shift_window is not None and self.res_shift_window.winfo_exists():
+            self.res_shift_window.destroy()
+        self.res_shift_window = None
+        self.res_shift_canvas = None
+        self.res_shift_toolbar = None
+        self.res_shift_figure = None
+        self.res_shift_status_var = None
+        self.res_shift_show_labels_var = None
+        self.res_shift_connect_var = None
+        self._res_shift_ax = None
+
+    def _render_resonator_shift_window(self) -> None:
+        if self.res_shift_figure is None or self.res_shift_canvas is None:
+            return
+
+        prior_xlim = None
+        prior_ylim = None
+        if self._res_shift_ax is not None:
+            try:
+                prior_xlim = self._res_shift_ax.get_xlim()
+                prior_ylim = self._res_shift_ax.get_ylim()
+            except Exception:
+                prior_xlim = None
+                prior_ylim = None
+
+        self.res_shift_figure.clear()
+        ax = self.res_shift_figure.add_subplot(111)
+        self._res_shift_ax = ax
+
+        try:
+            tests, series, points = self._resonator_shift_plot_data()
+        except Exception as exc:
+            ax.text(0.5, 0.5, str(exc), ha="center", va="center", transform=ax.transAxes)
+            ax.set_axis_off()
+            if self.res_shift_status_var is not None:
+                self.res_shift_status_var.set(str(exc))
+            self.res_shift_canvas.draw_idle()
+            return
+
+        for pair in series:
+            pair_points = [pt for pt in points if int(pt["pair_idx"]) == int(pair["pair_idx"])]
+            if not pair_points:
+                continue
+            x = np.asarray([float(pt["mean_freq_hz"]) / 1.0e9 for pt in pair_points], dtype=float)
+            y = np.asarray([float(pt["delta_rel"]) for pt in pair_points], dtype=float)
+            ax.scatter(
+                x,
+                y,
+                s=26,
+                color=pair["color"],
+                alpha=0.85,
+                edgecolors="none",
+                label=pair["label"],
+            )
+
+        if self.res_shift_connect_var is not None and self.res_shift_connect_var.get():
+            resonator_numbers = sorted(
+                {str(pt["resonator_number"]) for pt in points},
+                key=self._resonator_sort_key,
+            )
+            for resonator_label in resonator_numbers:
+                res_points = [
+                    pt for pt in points if str(pt["resonator_number"]) == resonator_label
+                ]
+                if len(res_points) < 2:
+                    continue
+                res_points.sort(
+                    key=lambda pt: (
+                        float(pt["mean_freq_hz"]),
+                        int(pt["pair_idx"]),
+                    )
+                )
+                x_line = np.asarray(
+                    [float(pt["mean_freq_hz"]) / 1.0e9 for pt in res_points],
+                    dtype=float,
+                )
+                y_line = np.asarray([float(pt["delta_rel"]) for pt in res_points], dtype=float)
+                ax.plot(
+                    x_line,
+                    y_line,
+                    color="black",
+                    linestyle="--",
+                    linewidth=0.9,
+                    alpha=0.65,
+                    zorder=1,
+                )
+
+        if self.res_shift_show_labels_var is not None and self.res_shift_show_labels_var.get():
+            for pt in points:
+                ax.annotate(
+                    str(pt["resonator_number"]),
+                    (float(pt["mean_freq_hz"]) / 1.0e9, float(pt["delta_rel"])),
+                    xytext=(4, 3),
+                    textcoords="offset points",
+                    fontsize=8,
+                    alpha=0.9,
+                )
+
+        ax.axhline(0.0, color="0.4", linewidth=0.8, linestyle="--")
+        ax.grid(True, alpha=0.3)
+        ax.set_xlabel("Mean Resonator Frequency (GHz)")
+        ax.set_ylabel("Relative Shift df/f")
+        ax.set_title("Marked Resonator Frequency Shifts Between Consecutive Tests")
+
+        if len(series) <= 12:
+            ax.legend(loc="best", fontsize=8, title="Consecutive tests")
+
+        if prior_xlim is not None and prior_ylim is not None:
+            ax.set_xlim(prior_xlim)
+            ax.set_ylim(prior_ylim)
+
+        self.res_shift_figure.tight_layout()
+        if self.res_shift_status_var is not None:
+            self.res_shift_status_var.set(
+                f"Showing {len(points)} df/f point(s) across {len(series)} consecutive test pair(s) from {len(tests)} selected test unit(s). Use toolbar zoom/pan, then toggle labels when needed."
+            )
+        self.res_shift_canvas.draw_idle()
+
+    def _resonator_shift_correlation_data(self) -> dict:
+        tests = self._resonator_shift_test_units()
+        if len(tests) < 3:
+            raise ValueError("At least three selected test dates with marked resonators are required for correlation analysis.")
+
+        values_by_resonator: dict[str, list[float]] = {}
+        for test in tests:
+            for resonator_label, freq_hz in test["resonators"].items():
+                values_by_resonator.setdefault(resonator_label, []).append(float(freq_hz))
+
+        mean_freq_by_resonator: dict[str, float] = {}
+        for resonator_label, values in values_by_resonator.items():
+            arr = np.asarray(values, dtype=float)
+            arr = arr[np.isfinite(arr)]
+            if arr.size:
+                mean_freq_by_resonator[resonator_label] = float(np.mean(arr))
+
+        pair_count = len(tests) - 1
+        resonator_labels = sorted(mean_freq_by_resonator, key=lambda label: (mean_freq_by_resonator[label], self._resonator_sort_key(label)))
+        if not resonator_labels:
+            raise ValueError("No marked resonators were found for the selected tests.")
+
+        label_to_index = {label: idx for idx, label in enumerate(resonator_labels)}
+        shift_matrix = np.full((len(resonator_labels), pair_count), np.nan, dtype=float)
+        pair_labels: list[str] = []
+        for pair_idx in range(pair_count):
+            left = tests[pair_idx]
+            right = tests[pair_idx + 1]
+            pair_labels.append(f"{left['date_label']} -> {right['date_label']}")
+            shared = set(left["resonators"]).intersection(right["resonators"])
+            for resonator_label in shared:
+                row_idx = label_to_index.get(resonator_label)
+                mean_freq_hz = mean_freq_by_resonator.get(resonator_label)
+                if row_idx is None or mean_freq_hz is None or mean_freq_hz == 0.0:
+                    continue
+                delta_rel = (float(right["resonators"][resonator_label]) - float(left["resonators"][resonator_label])) / float(mean_freq_hz)
+                shift_matrix[row_idx, pair_idx] = float(delta_rel)
+
+        valid_counts = np.sum(np.isfinite(shift_matrix), axis=1)
+        keep_mask = valid_counts >= 2
+        if np.count_nonzero(keep_mask) < 2:
+            raise ValueError("Need at least two resonators with shifts on two or more consecutive test pairs.")
+        resonator_labels = [label for label, keep in zip(resonator_labels, keep_mask) if keep]
+        mean_freqs_hz = np.asarray([mean_freq_by_resonator[label] for label in resonator_labels], dtype=float)
+        shift_matrix = shift_matrix[keep_mask, :]
+
+        corr_matrix = np.full((len(resonator_labels), len(resonator_labels)), np.nan, dtype=float)
+        pair_points: list[dict] = []
+        for i in range(len(resonator_labels)):
+            corr_matrix[i, i] = 1.0
+            for j in range(i + 1, len(resonator_labels)):
+                xi = shift_matrix[i, :]
+                xj = shift_matrix[j, :]
+                mask = np.isfinite(xi) & np.isfinite(xj)
+                if np.count_nonzero(mask) < 2:
+                    continue
+                vi = xi[mask]
+                vj = xj[mask]
+                std_i = float(np.std(vi))
+                std_j = float(np.std(vj))
+                if std_i == 0.0 and std_j == 0.0:
+                    corr = 1.0 if np.allclose(vi, vj) else np.nan
+                elif std_i == 0.0 or std_j == 0.0:
+                    corr = np.nan
+                else:
+                    corr = float(np.corrcoef(vi, vj)[0, 1])
+                corr_matrix[i, j] = corr
+                corr_matrix[j, i] = corr
+                if np.isfinite(corr):
+                    pair_points.append(
+                        {
+                            "separation_hz": float(abs(mean_freqs_hz[j] - mean_freqs_hz[i])),
+                            "correlation": corr,
+                        }
+                    )
+
+        if not pair_points:
+            raise ValueError("No resonator pairs had enough overlapping shift measurements to correlate.")
+
+        separations_hz = np.asarray([pt["separation_hz"] for pt in pair_points], dtype=float)
+        max_sep = float(np.max(separations_hz))
+        if max_sep <= 0.0:
+            bin_edges = np.asarray([0.0, 1.0], dtype=float)
+        else:
+            nbins = min(16, max(4, int(np.sqrt(len(pair_points)))))
+            bin_edges = np.linspace(0.0, max_sep, nbins + 1)
+            if not np.all(np.diff(bin_edges) > 0):
+                bin_edges = np.asarray([0.0, max_sep], dtype=float)
+        bin_centers: list[float] = []
+        bin_means: list[float] = []
+        bin_counts: list[int] = []
+        for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+            if hi <= lo:
+                continue
+            if hi == bin_edges[-1]:
+                mask = (separations_hz >= lo) & (separations_hz <= hi)
+            else:
+                mask = (separations_hz >= lo) & (separations_hz < hi)
+            if not np.any(mask):
+                continue
+            corr_vals = np.asarray([pair_points[idx]["correlation"] for idx in np.flatnonzero(mask)], dtype=float)
+            corr_vals = corr_vals[np.isfinite(corr_vals)]
+            if corr_vals.size == 0:
+                continue
+            bin_centers.append(0.5 * (lo + hi))
+            bin_means.append(float(np.mean(corr_vals)))
+            bin_counts.append(int(corr_vals.size))
+
+        return {
+            "tests": tests,
+            "pair_labels": pair_labels,
+            "resonator_labels": resonator_labels,
+            "mean_freqs_hz": mean_freqs_hz,
+            "shift_matrix": shift_matrix,
+            "corr_matrix": corr_matrix,
+            "pair_points": pair_points,
+            "bin_centers_hz": np.asarray(bin_centers, dtype=float),
+            "bin_means": np.asarray(bin_means, dtype=float),
+            "bin_counts": np.asarray(bin_counts, dtype=int),
+        }
+
+    def open_resonator_shift_correlation_window(self) -> None:
+        if self.res_shift_corr_window is not None and self.res_shift_corr_window.winfo_exists():
+            self.res_shift_corr_window.lift()
+            self._render_resonator_shift_correlation_window()
+            return
+
+        self.res_shift_corr_window = tk.Toplevel(self.root)
+        self.res_shift_corr_window.title("Resonator Shift Correlation")
+        self.res_shift_corr_window.geometry("1460x900")
+        self.res_shift_corr_window.protocol("WM_DELETE_WINDOW", self._close_resonator_shift_correlation_window)
+
+        controls = tk.Frame(self.res_shift_corr_window, padx=8, pady=8)
+        controls.pack(side="top", fill="x")
+        self.res_shift_corr_status_var = tk.StringVar(
+            value="Showing correlation of resonator df/f across consecutive selected tests."
+        )
+        tk.Label(controls, textvariable=self.res_shift_corr_status_var, anchor="w").pack(
+            side="left", fill="x", expand=True
+        )
+        tk.Button(controls, text="Refresh", width=10, command=self._render_resonator_shift_correlation_window).pack(
+            side="right"
+        )
+
+        self.res_shift_corr_figure = Figure(figsize=(13, 8))
+        self.res_shift_corr_canvas = FigureCanvasTkAgg(self.res_shift_corr_figure, master=self.res_shift_corr_window)
+        self.res_shift_corr_toolbar = NavigationToolbar2Tk(self.res_shift_corr_canvas, self.res_shift_corr_window)
+        self.res_shift_corr_toolbar.update()
+        self.res_shift_corr_toolbar.pack(side="top", fill="x")
+        self.res_shift_corr_canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        self._render_resonator_shift_correlation_window()
+
+    def _close_resonator_shift_correlation_window(self) -> None:
+        if self.res_shift_corr_window is not None and self.res_shift_corr_window.winfo_exists():
+            self.res_shift_corr_window.destroy()
+        self.res_shift_corr_window = None
+        self.res_shift_corr_canvas = None
+        self.res_shift_corr_toolbar = None
+        self.res_shift_corr_figure = None
+        self.res_shift_corr_status_var = None
+        self._res_shift_corr_axes = None
+
+    def _render_resonator_shift_correlation_window(self) -> None:
+        if self.res_shift_corr_figure is None or self.res_shift_corr_canvas is None:
+            return
+
+        prior_scatter_xlim = None
+        prior_scatter_ylim = None
+        if self._res_shift_corr_axes is not None:
+            try:
+                prior_scatter_xlim = self._res_shift_corr_axes[1].get_xlim()
+                prior_scatter_ylim = self._res_shift_corr_axes[1].get_ylim()
+            except Exception:
+                prior_scatter_xlim = None
+                prior_scatter_ylim = None
+
+        self.res_shift_corr_figure.clear()
+        ax_heat = self.res_shift_corr_figure.add_subplot(1, 2, 1)
+        ax_scatter = self.res_shift_corr_figure.add_subplot(1, 2, 2)
+        self._res_shift_corr_axes = (ax_heat, ax_scatter)
+
+        try:
+            data = self._resonator_shift_correlation_data()
+        except Exception as exc:
+            ax_heat.text(0.5, 0.5, str(exc), ha="center", va="center", transform=ax_heat.transAxes)
+            ax_heat.set_axis_off()
+            ax_scatter.set_axis_off()
+            if self.res_shift_corr_status_var is not None:
+                self.res_shift_corr_status_var.set(str(exc))
+            self.res_shift_corr_canvas.draw_idle()
+            return
+
+        mean_freqs_ghz = np.asarray(data["mean_freqs_hz"], dtype=float) / 1.0e9
+        corr_matrix = np.asarray(data["corr_matrix"], dtype=float)
+        pair_points = data["pair_points"]
+        bin_centers_mhz = np.asarray(data["bin_centers_hz"], dtype=float) / 1.0e6
+        bin_means = np.asarray(data["bin_means"], dtype=float)
+
+        freq_min = float(np.min(mean_freqs_ghz))
+        freq_max = float(np.max(mean_freqs_ghz))
+        im = ax_heat.imshow(
+            corr_matrix,
+            origin="lower",
+            aspect="auto",
+            extent=[freq_min, freq_max, freq_min, freq_max],
+            vmin=-1.0,
+            vmax=1.0,
+            cmap="coolwarm",
+        )
+        ax_heat.set_xlabel("Mean Resonator Frequency (GHz)")
+        ax_heat.set_ylabel("Mean Resonator Frequency (GHz)")
+        ax_heat.set_title("Shift Correlation Heatmap")
+        colorbar = self.res_shift_corr_figure.colorbar(im, ax=ax_heat, fraction=0.046, pad=0.04)
+        colorbar.set_label("Correlation")
+
+        sep_mhz = np.asarray([float(pt["separation_hz"]) / 1.0e6 for pt in pair_points], dtype=float)
+        corr_vals = np.asarray([float(pt["correlation"]) for pt in pair_points], dtype=float)
+        ax_scatter.scatter(
+            sep_mhz,
+            corr_vals,
+            s=18,
+            color="tab:blue",
+            alpha=0.45,
+            edgecolors="none",
+            label="Resonator pairs",
+        )
+        if bin_centers_mhz.size and bin_means.size:
+            ax_scatter.plot(
+                bin_centers_mhz,
+                bin_means,
+                color="black",
+                linewidth=2.0,
+                marker="o",
+                markersize=4,
+                label="Binned mean",
+            )
+        ax_scatter.axhline(0.0, color="0.4", linewidth=0.8, linestyle="--")
+        ax_scatter.grid(True, alpha=0.3)
+        ax_scatter.set_xlabel("Resonator Frequency Separation (MHz)")
+        ax_scatter.set_ylabel("Shift Correlation")
+        ax_scatter.set_title("Correlation vs Frequency Separation")
+        ax_scatter.legend(loc="best", fontsize=8)
+
+        if prior_scatter_xlim is not None and prior_scatter_ylim is not None:
+            ax_scatter.set_xlim(prior_scatter_xlim)
+            ax_scatter.set_ylim(prior_scatter_ylim)
+
+        self.res_shift_corr_figure.suptitle("Resonator Shift Correlations Across Tests", fontsize=12)
+        self.res_shift_corr_figure.tight_layout()
+        if self.res_shift_corr_status_var is not None:
+            self.res_shift_corr_status_var.set(
+                f"Showing {len(data['resonator_labels'])} resonators and {len(pair_points)} resonator-pair correlations across {len(data['pair_labels'])} consecutive test pair(s)."
+            )
+        self.res_shift_corr_canvas.draw_idle()
+
+    def _resonator_pair_dfdiff_hist_data(self, max_separation_mhz: float) -> dict:
+        tests = self._resonator_shift_test_units()
+        if len(tests) < 2:
+            raise ValueError("At least two selected test dates with marked resonators are required.")
+
+        max_separation_hz = max(0.0, float(max_separation_mhz)) * 1.0e6
+
+        values_by_resonator: dict[str, list[float]] = {}
+        for test in tests:
+            for resonator_label, freq_hz in test["resonators"].items():
+                values_by_resonator.setdefault(resonator_label, []).append(float(freq_hz))
+
+        mean_freq_by_resonator: dict[str, float] = {}
+        for resonator_label, values in values_by_resonator.items():
+            arr = np.asarray(values, dtype=float)
+            arr = arr[np.isfinite(arr)]
+            if arr.size:
+                mean_freq_by_resonator[resonator_label] = float(np.mean(arr))
+        if not mean_freq_by_resonator:
+            raise ValueError("No marked resonators were found for the selected tests.")
+
+        pair_labels: list[str] = []
+        delta_diff_records: list[dict] = []
+        for pair_idx in range(len(tests) - 1):
+            left = tests[pair_idx]
+            right = tests[pair_idx + 1]
+            pair_label = f"{left['date_label']} -> {right['date_label']}"
+            pair_labels.append(pair_label)
+
+            shared_labels = [
+                label
+                for label in left["resonators"]
+                if label in right["resonators"] and label in mean_freq_by_resonator
+            ]
+            shared_labels.sort(
+                key=lambda label: (float(mean_freq_by_resonator[label]), self._resonator_sort_key(label))
+            )
+            if len(shared_labels) < 2:
+                continue
+
+            deltas_hz: dict[str, float] = {}
+            for label in shared_labels:
+                delta_hz = float(right["resonators"][label]) - float(left["resonators"][label])
+                if np.isfinite(delta_hz):
+                    deltas_hz[label] = delta_hz
+
+            ordered = [label for label in shared_labels if label in deltas_hz]
+            for left_idx in range(len(ordered) - 1):
+                label1 = ordered[left_idx]
+                f1_hz = float(mean_freq_by_resonator[label1])
+                df1_hz = float(deltas_hz[label1])
+                for right_idx in range(left_idx + 1, len(ordered)):
+                    label2 = ordered[right_idx]
+                    f2_hz = float(mean_freq_by_resonator[label2])
+                    separation_hz = f2_hz - f1_hz
+                    if separation_hz < 0.0:
+                        continue
+                    if separation_hz > max_separation_hz:
+                        break
+                    left_f1_hz = float(left["resonators"][label1])
+                    left_f2_hz = float(left["resonators"][label2])
+                    right_f1_hz = float(right["resonators"][label1])
+                    right_f2_hz = float(right["resonators"][label2])
+                    df2_hz = float(deltas_hz[label2])
+                    rel_delta_diff = (df2_hz - df1_hz) / f1_hz if f1_hz != 0.0 else np.nan
+                    start_rel_sep = (left_f2_hz - left_f1_hz) / left_f1_hz if left_f1_hz != 0.0 else np.nan
+                    end_rel_sep = (right_f2_hz - right_f1_hz) / right_f1_hz if right_f1_hz != 0.0 else np.nan
+                    delta_diff_records.append(
+                        {
+                            "pair_idx": pair_idx,
+                            "pair_label": pair_label,
+                            "res1": label1,
+                            "res2": label2,
+                            "f1_hz": f1_hz,
+                            "f2_hz": f2_hz,
+                            "left_f1_hz": left_f1_hz,
+                            "left_f2_hz": left_f2_hz,
+                            "right_f1_hz": right_f1_hz,
+                            "right_f2_hz": right_f2_hz,
+                            "separation_hz": separation_hz,
+                            "df1_hz": df1_hz,
+                            "df2_hz": df2_hz,
+                            "delta_diff_hz": df2_hz - df1_hz,
+                            "rel_delta_diff": rel_delta_diff,
+                            "start_rel_sep": start_rel_sep,
+                            "end_rel_sep": end_rel_sep,
+                        }
+                    )
+
+        if not delta_diff_records:
+            raise ValueError(
+                f"No resonator pairs within {max_separation_mhz:.3g} MHz were found across consecutive selected tests."
+            )
+
+        return {
+            "tests": tests,
+            "pair_labels": pair_labels,
+            "records": delta_diff_records,
+        }
+
+    def open_resonator_pair_dfdiff_hist_window(self) -> None:
+        if self.res_pair_dfdiff_hist_window is not None and self.res_pair_dfdiff_hist_window.winfo_exists():
+            self.res_pair_dfdiff_hist_window.lift()
+            self._render_resonator_pair_dfdiff_hist_window()
+            return
+
+        self.res_pair_dfdiff_hist_window = tk.Toplevel(self.root)
+        self.res_pair_dfdiff_hist_window.title("Histogram of df2-df1")
+        self.res_pair_dfdiff_hist_window.geometry("1320x860")
+        self.res_pair_dfdiff_hist_window.protocol("WM_DELETE_WINDOW", self._close_resonator_pair_dfdiff_hist_window)
+
+        controls = tk.Frame(self.res_pair_dfdiff_hist_window, padx=8, pady=8)
+        controls.pack(side="top", fill="x")
+        self.res_pair_dfdiff_hist_status_var = tk.StringVar(
+            value="Showing counts of (df2-df1)/f1 for resonator pairs from consecutive selected tests."
+        )
+        self.res_pair_dfdiff_hist_sep_mhz_var = tk.DoubleVar(value=10.0)
+        self.res_pair_dfdiff_hist_bin_mhz_var = tk.DoubleVar(value=0.0001)
+        self.res_pair_dfdiff_hist_capture_var = tk.DoubleVar(value=1.0 / 20000.0)
+        self.res_pair_dfdiff_hist_fit_mode_var = tk.StringVar(value="gennorm")
+        self.res_pair_dfdiff_hist_num_res_var = tk.IntVar(value=1000)
+        self.res_pair_dfdiff_hist_band_min_var = tk.DoubleVar(value=0.5)
+        self.res_pair_dfdiff_hist_band_max_var = tk.DoubleVar(value=1.5)
+        self.res_pair_dfdiff_hist_freq_dist_var = tk.StringVar(value="uniform_rel_spacing_gaussian")
+        self.res_pair_dfdiff_hist_freq_jitter_khz_var = tk.DoubleVar(value=100.0)
+
+        scale_wrap = tk.Frame(controls)
+        scale_wrap.pack(side="top", fill="x")
+        tk.Label(scale_wrap, text="N").pack(side="left", padx=(0, 4))
+        num_res_entry = tk.Entry(scale_wrap, width=7, textvariable=self.res_pair_dfdiff_hist_num_res_var)
+        num_res_entry.pack(side="left")
+        num_res_entry.bind("<Return>", lambda _event: self._render_resonator_pair_dfdiff_hist_window())
+        num_res_entry.bind("<FocusOut>", lambda _event: self._render_resonator_pair_dfdiff_hist_window())
+        tk.Label(scale_wrap, text="Band (GHz)").pack(side="left", padx=(10, 4))
+        band_min_entry = tk.Entry(scale_wrap, width=6, textvariable=self.res_pair_dfdiff_hist_band_min_var)
+        band_min_entry.pack(side="left")
+        band_min_entry.bind("<Return>", lambda _event: self._render_resonator_pair_dfdiff_hist_window())
+        band_min_entry.bind("<FocusOut>", lambda _event: self._render_resonator_pair_dfdiff_hist_window())
+        tk.Label(scale_wrap, text="to").pack(side="left", padx=2)
+        band_max_entry = tk.Entry(scale_wrap, width=6, textvariable=self.res_pair_dfdiff_hist_band_max_var)
+        band_max_entry.pack(side="left")
+        band_max_entry.bind("<Return>", lambda _event: self._render_resonator_pair_dfdiff_hist_window())
+        band_max_entry.bind("<FocusOut>", lambda _event: self._render_resonator_pair_dfdiff_hist_window())
+        tk.Label(scale_wrap, text="Layout").pack(side="left", padx=(10, 4))
+        tk.Radiobutton(
+            scale_wrap,
+            text="Uniform random",
+            value="uniform",
+            variable=self.res_pair_dfdiff_hist_freq_dist_var,
+            command=self._render_resonator_pair_dfdiff_hist_window,
+        ).pack(side="left")
+        tk.Radiobutton(
+            scale_wrap,
+            text="Equally spaced",
+            value="equally_spaced",
+            variable=self.res_pair_dfdiff_hist_freq_dist_var,
+            command=self._render_resonator_pair_dfdiff_hist_window,
+        ).pack(side="left")
+        tk.Radiobutton(
+            scale_wrap,
+            text="Uniform df/f + Gaussian",
+            value="uniform_rel_spacing_gaussian",
+            variable=self.res_pair_dfdiff_hist_freq_dist_var,
+            command=self._render_resonator_pair_dfdiff_hist_window,
+        ).pack(side="left")
+        tk.Button(
+            scale_wrap, text="Refresh", width=10, command=self._render_resonator_pair_dfdiff_hist_window
+        ).pack(side="right", padx=(8, 0))
+        tk.Label(controls, textvariable=self.res_pair_dfdiff_hist_status_var, anchor="w", justify="left").pack(
+            side="top", fill="x", pady=(6, 0)
+        )
+        tk.Label(scale_wrap, text="Max |f2-f1| (MHz)").pack(side="left", padx=(0, 4))
+        self.res_pair_dfdiff_hist_sep_scale = tk.Scale(
+            scale_wrap,
+            from_=0.1,
+            to=100.0,
+            resolution=0.1,
+            orient="horizontal",
+            length=170,
+            showvalue=True,
+            variable=self.res_pair_dfdiff_hist_sep_mhz_var,
+        )
+        self.res_pair_dfdiff_hist_sep_scale.pack(side="left")
+        self.res_pair_dfdiff_hist_sep_scale.bind(
+            "<ButtonRelease-1>",
+            lambda _event: self._render_resonator_pair_dfdiff_hist_window(),
+        )
+        self.res_pair_dfdiff_hist_sep_scale.bind(
+            "<KeyRelease>",
+            lambda _event: self._render_resonator_pair_dfdiff_hist_window(),
+        )
+        tk.Label(scale_wrap, text="Bin width").pack(side="left", padx=(10, 4))
+        self.res_pair_dfdiff_hist_bin_scale = tk.Scale(
+            scale_wrap,
+            from_=0.00001,
+            to=5.0,
+            resolution=0.00001,
+            orient="horizontal",
+            length=160,
+            showvalue=True,
+            variable=self.res_pair_dfdiff_hist_bin_mhz_var,
+        )
+        self.res_pair_dfdiff_hist_bin_scale.pack(side="left")
+        self.res_pair_dfdiff_hist_bin_scale.bind(
+            "<ButtonRelease-1>",
+            lambda _event: self._render_resonator_pair_dfdiff_hist_window(),
+        )
+        self.res_pair_dfdiff_hist_bin_scale.bind(
+            "<KeyRelease>",
+            lambda _event: self._render_resonator_pair_dfdiff_hist_window(),
+        )
+        tk.Label(scale_wrap, text="Collision +/-").pack(side="left", padx=(10, 4))
+        self.res_pair_dfdiff_hist_capture_scale = tk.Scale(
+            scale_wrap,
+            from_=0.00001,
+            to=0.0005,
+            resolution=0.00001,
+            orient="horizontal",
+            length=160,
+            showvalue=True,
+            variable=self.res_pair_dfdiff_hist_capture_var,
+        )
+        self.res_pair_dfdiff_hist_capture_scale.pack(side="left")
+        self.res_pair_dfdiff_hist_capture_scale.bind(
+            "<ButtonRelease-1>",
+            lambda _event: self._render_resonator_pair_dfdiff_hist_window(),
+        )
+        self.res_pair_dfdiff_hist_capture_scale.bind(
+            "<KeyRelease>",
+            lambda _event: self._render_resonator_pair_dfdiff_hist_window(),
+        )
+        tk.Label(scale_wrap, text="Offset std (kHz)").pack(side="left", padx=(10, 4))
+        self.res_pair_dfdiff_hist_freq_jitter_scale = tk.Scale(
+            scale_wrap,
+            from_=0.0,
+            to=1000.0,
+            resolution=1.0,
+            orient="horizontal",
+            length=160,
+            showvalue=True,
+            variable=self.res_pair_dfdiff_hist_freq_jitter_khz_var,
+        )
+        self.res_pair_dfdiff_hist_freq_jitter_scale.pack(side="left")
+        self.res_pair_dfdiff_hist_freq_jitter_scale.bind(
+            "<ButtonRelease-1>",
+            lambda _event: self._render_resonator_pair_dfdiff_hist_window(),
+        )
+        self.res_pair_dfdiff_hist_freq_jitter_scale.bind(
+            "<KeyRelease>",
+            lambda _event: self._render_resonator_pair_dfdiff_hist_window(),
+        )
+        tk.Label(scale_wrap, text="Fit").pack(side="left", padx=(10, 4))
+        tk.Radiobutton(
+            scale_wrap,
+            text="Gaussian",
+            value="gaussian",
+            variable=self.res_pair_dfdiff_hist_fit_mode_var,
+            command=self._render_resonator_pair_dfdiff_hist_window,
+        ).pack(side="left")
+        tk.Radiobutton(
+            scale_wrap,
+            text="Gen. normal",
+            value="gennorm",
+            variable=self.res_pair_dfdiff_hist_fit_mode_var,
+            command=self._render_resonator_pair_dfdiff_hist_window,
+        ).pack(side="left")
+
+        self.res_pair_dfdiff_hist_figure = Figure(figsize=(12, 7))
+        self.res_pair_dfdiff_hist_canvas = FigureCanvasTkAgg(
+            self.res_pair_dfdiff_hist_figure,
+            master=self.res_pair_dfdiff_hist_window,
+        )
+        self.res_pair_dfdiff_hist_toolbar = NavigationToolbar2Tk(
+            self.res_pair_dfdiff_hist_canvas,
+            self.res_pair_dfdiff_hist_window,
+        )
+        self.res_pair_dfdiff_hist_toolbar.update()
+        self.res_pair_dfdiff_hist_toolbar.pack(side="top", fill="x")
+        self.res_pair_dfdiff_hist_canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        self._render_resonator_pair_dfdiff_hist_window()
+
+    def _close_resonator_pair_dfdiff_hist_window(self) -> None:
+        if self.res_pair_dfdiff_hist_window is not None and self.res_pair_dfdiff_hist_window.winfo_exists():
+            self.res_pair_dfdiff_hist_window.destroy()
+        self.res_pair_dfdiff_hist_window = None
+        self.res_pair_dfdiff_hist_canvas = None
+        self.res_pair_dfdiff_hist_toolbar = None
+        self.res_pair_dfdiff_hist_figure = None
+        self.res_pair_dfdiff_hist_status_var = None
+        self.res_pair_dfdiff_hist_sep_mhz_var = None
+        self.res_pair_dfdiff_hist_bin_mhz_var = None
+        self.res_pair_dfdiff_hist_capture_var = None
+        self.res_pair_dfdiff_hist_fit_mode_var = None
+        self.res_pair_dfdiff_hist_num_res_var = None
+        self.res_pair_dfdiff_hist_band_min_var = None
+        self.res_pair_dfdiff_hist_band_max_var = None
+        self.res_pair_dfdiff_hist_freq_dist_var = None
+        self.res_pair_dfdiff_hist_freq_jitter_khz_var = None
+        self.res_pair_dfdiff_hist_sep_scale = None
+        self.res_pair_dfdiff_hist_bin_scale = None
+        self.res_pair_dfdiff_hist_capture_scale = None
+        self.res_pair_dfdiff_hist_freq_jitter_scale = None
+        self._res_pair_dfdiff_hist_ax = None
+
+    def _render_resonator_pair_dfdiff_hist_window(self) -> None:
+        if self.res_pair_dfdiff_hist_figure is None or self.res_pair_dfdiff_hist_canvas is None:
+            return
+
+        prior_xlim = None
+        prior_ylim = None
+        if self._res_pair_dfdiff_hist_ax is not None:
+            try:
+                prior_xlim = self._res_pair_dfdiff_hist_ax.get_xlim()
+                prior_ylim = self._res_pair_dfdiff_hist_ax.get_ylim()
+            except Exception:
+                prior_xlim = None
+                prior_ylim = None
+
+        self.res_pair_dfdiff_hist_figure.clear()
+        gs = self.res_pair_dfdiff_hist_figure.add_gridspec(
+            2,
+            2,
+            width_ratios=[3.0, 2.0],
+            height_ratios=[3.0, 2.0],
+        )
+        ax_hist = self.res_pair_dfdiff_hist_figure.add_subplot(gs[0, 0])
+        ax_prob = self.res_pair_dfdiff_hist_figure.add_subplot(gs[0, 1])
+        ax_cdf = self.res_pair_dfdiff_hist_figure.add_subplot(gs[1, :])
+        ax = ax_hist
+        self._res_pair_dfdiff_hist_ax = ax_hist
+
+        max_sep_mhz = (
+            float(self.res_pair_dfdiff_hist_sep_mhz_var.get())
+            if self.res_pair_dfdiff_hist_sep_mhz_var is not None
+            else 10.0
+        )
+        bin_width_mhz = (
+            float(self.res_pair_dfdiff_hist_bin_mhz_var.get())
+            if self.res_pair_dfdiff_hist_bin_mhz_var is not None
+            else 0.1
+        )
+        bin_width_mhz = max(bin_width_mhz, 1.0e-6)
+        capture_threshold = (
+            float(self.res_pair_dfdiff_hist_capture_var.get())
+            if self.res_pair_dfdiff_hist_capture_var is not None
+            else (1.0 / 20000.0)
+        )
+        capture_threshold = max(capture_threshold, 0.0)
+        num_resonators = (
+            max(2, int(self.res_pair_dfdiff_hist_num_res_var.get()))
+            if self.res_pair_dfdiff_hist_num_res_var is not None
+            else 1000
+        )
+        band_min_ghz = (
+            float(self.res_pair_dfdiff_hist_band_min_var.get())
+            if self.res_pair_dfdiff_hist_band_min_var is not None
+            else 0.5
+        )
+        band_max_ghz = (
+            float(self.res_pair_dfdiff_hist_band_max_var.get())
+            if self.res_pair_dfdiff_hist_band_max_var is not None
+            else 1.5
+        )
+        if not np.isfinite(band_min_ghz) or not np.isfinite(band_max_ghz) or band_max_ghz <= band_min_ghz:
+            band_min_ghz = 0.5
+            band_max_ghz = 1.5
+        freq_dist_mode = (
+            str(self.res_pair_dfdiff_hist_freq_dist_var.get())
+            if self.res_pair_dfdiff_hist_freq_dist_var is not None
+            else "uniform"
+        ).strip().lower()
+        freq_jitter_khz = (
+            float(self.res_pair_dfdiff_hist_freq_jitter_khz_var.get())
+            if self.res_pair_dfdiff_hist_freq_jitter_khz_var is not None
+            else 100.0
+        )
+        freq_jitter_hz = max(0.0, freq_jitter_khz) * 1.0e3
+
+        try:
+            data = self._resonator_pair_dfdiff_hist_data(max_sep_mhz)
+        except Exception as exc:
+            ax.text(0.5, 0.5, str(exc), ha="center", va="center", transform=ax.transAxes)
+            ax.set_axis_off()
+            ax_prob.set_axis_off()
+            ax_cdf.set_axis_off()
+            if self.res_pair_dfdiff_hist_status_var is not None:
+                self.res_pair_dfdiff_hist_status_var.set(str(exc))
+            self.res_pair_dfdiff_hist_canvas.draw_idle()
+            return
+
+        values_mhz = np.asarray(
+            [float(record["rel_delta_diff"]) for record in data["records"]],
+            dtype=float,
+        )
+        values_mhz = values_mhz[np.isfinite(values_mhz)]
+        if values_mhz.size == 0:
+            ax.text(0.5, 0.5, "No finite (df2-df1)/f1 values were available.", ha="center", va="center", transform=ax.transAxes)
+            ax.set_axis_off()
+            if self.res_pair_dfdiff_hist_status_var is not None:
+                self.res_pair_dfdiff_hist_status_var.set("No finite (df2-df1)/f1 values were available.")
+            self.res_pair_dfdiff_hist_canvas.draw_idle()
+            return
+
+        vmin = float(np.min(values_mhz))
+        vmax = float(np.max(values_mhz))
+        if np.isclose(vmin, vmax):
+            pad = max(0.5 * bin_width_mhz, 1.0e-3)
+            half_width = max(bin_width_mhz, pad)
+            bin_edges = np.asarray([-half_width, 0.0, half_width], dtype=float)
+        else:
+            start = bin_width_mhz * (np.floor(vmin / bin_width_mhz - 0.5) + 0.5)
+            stop = bin_width_mhz * (np.ceil(vmax / bin_width_mhz - 0.5) + 0.5)
+            if np.isclose(start, stop):
+                stop = start + bin_width_mhz
+            bin_edges = np.arange(start, stop + bin_width_mhz * 1.0001, bin_width_mhz, dtype=float)
+            if bin_edges.size < 2:
+                bin_edges = np.asarray([start, start + bin_width_mhz], dtype=float)
+
+        pair_labels = list(data["pair_labels"])
+        values_by_pair: list[np.ndarray] = []
+        plotted_pair_labels: list[str] = []
+        for pair_idx, pair_label in enumerate(pair_labels):
+            pair_values = np.asarray(
+                [
+                    float(record["rel_delta_diff"])
+                    for record in data["records"]
+                    if int(record["pair_idx"]) == pair_idx and np.isfinite(float(record["rel_delta_diff"]))
+                ],
+                dtype=float,
+            )
+            if pair_values.size == 0:
+                continue
+            values_by_pair.append(pair_values)
+            plotted_pair_labels.append(pair_label)
+
+        colors = plt.cm.rainbow(np.linspace(0.0, 1.0, max(len(values_by_pair), 1)))
+        counts_list, bins, _patches = ax.hist(
+            values_by_pair,
+            bins=bin_edges,
+            stacked=True,
+            color=colors[: len(values_by_pair)],
+            alpha=0.8,
+            edgecolor="black",
+            linewidth=0.5,
+            label=plotted_pair_labels,
+        )
+        counts = np.asarray(counts_list[-1], dtype=float) if len(counts_list) else np.asarray([], dtype=float)
+        ax.grid(True, axis="y", alpha=0.3)
+        ax.set_xlabel("(df2 - df1) / f1")
+        ax.set_ylabel("Count")
+        ax.set_title("Histogram of (df2-df1)/f1 for Nearby Resonator Pairs")
+
+        fit_mode = (
+            str(self.res_pair_dfdiff_hist_fit_mode_var.get())
+            if self.res_pair_dfdiff_hist_fit_mode_var is not None
+            else "gaussian"
+        ).strip().lower()
+        x_fit = np.linspace(float(bins[0]), float(bins[-1]), 600)
+        fit_summary = " Fit unavailable."
+        fit_label = None
+        y_fit = None
+        fit_dist = None
+
+        try:
+            if fit_mode == "gennorm":
+                beta_hat, mu_hat, alpha_hat = stats.gennorm.fit(values_mhz)
+                if np.isfinite(beta_hat) and np.isfinite(mu_hat) and np.isfinite(alpha_hat) and beta_hat > 0.0 and alpha_hat > 0.0:
+                    pdf = stats.gennorm.pdf(x_fit, beta_hat, loc=mu_hat, scale=alpha_hat)
+                    y_fit = values_mhz.size * bin_width_mhz * pdf
+                    fit_label = f"Gen. normal fit: mu={mu_hat:.3g}, alpha={alpha_hat:.3g}, beta={beta_hat:.3g}"
+                    fit_summary = f" Gen. normal fit: mu={mu_hat:.3g}, alpha={alpha_hat:.3g}, beta={beta_hat:.3g}."
+                    fit_dist = stats.gennorm(beta_hat, loc=mu_hat, scale=alpha_hat)
+            else:
+                mu_hat, sigma_hat = stats.norm.fit(values_mhz)
+                if np.isfinite(mu_hat) and np.isfinite(sigma_hat) and sigma_hat > 0.0:
+                    pdf = stats.norm.pdf(x_fit, loc=mu_hat, scale=sigma_hat)
+                    y_fit = values_mhz.size * bin_width_mhz * pdf
+                    fit_label = f"Gaussian fit: mu={mu_hat:.3g}, sigma={sigma_hat:.3g}"
+                    fit_summary = f" Gaussian fit: mu={mu_hat:.3g}, sigma={sigma_hat:.3g}."
+                    fit_dist = stats.norm(loc=mu_hat, scale=sigma_hat)
+        except Exception:
+            y_fit = None
+            fit_dist = None
+
+        if y_fit is not None and fit_label is not None:
+            ax.plot(
+                x_fit,
+                y_fit,
+                color="black",
+                linewidth=2.0,
+                linestyle="-",
+                label=fit_label,
+                zorder=5,
+            )
+        if plotted_pair_labels and len(plotted_pair_labels) <= 12:
+            ax.legend(loc="best", fontsize=8, title="Consecutive tests")
+        elif y_fit is not None:
+            ax.legend(loc="best", fontsize=8)
+
+        if prior_xlim is not None:
+            ax.set_xlim(prior_xlim)
+        else:
+            ax.set_xlim(float(bins[0]), float(bins[-1]))
+
+        y_candidates = [0.0]
+        if counts.size:
+            y_candidates.append(float(np.max(counts)))
+        if y_fit is not None:
+            fit_max = np.asarray(y_fit, dtype=float)
+            fit_max = fit_max[np.isfinite(fit_max)]
+            if fit_max.size:
+                y_candidates.append(float(np.max(fit_max)))
+        y_top = max(y_candidates)
+        y_pad = 1.0 if y_top <= 0.0 else 0.08 * y_top
+        ax.set_ylim(0.0, y_top + y_pad)
+
+        start_rel_values = np.asarray(
+            [float(record["start_rel_sep"]) for record in data["records"]],
+            dtype=float,
+        )
+        end_rel_values = np.asarray(
+            [float(record["end_rel_sep"]) for record in data["records"]],
+            dtype=float,
+        )
+        valid_prob_mask = np.isfinite(start_rel_values) & np.isfinite(end_rel_values)
+        start_rel_values = start_rel_values[valid_prob_mask]
+        end_rel_values = end_rel_values[valid_prob_mask]
+        if start_rel_values.size:
+            prob_bin_width = bin_width_mhz
+            prob_start = 0.0
+            prob_stop = 0.001
+            prob_edges = np.arange(
+                prob_start,
+                prob_stop + prob_bin_width * 1.0001,
+                prob_bin_width,
+                dtype=float,
+            )
+            if prob_edges.size < 2:
+                prob_edges = np.asarray([prob_start, prob_start + prob_bin_width], dtype=float)
+
+            prob_x: list[float] = []
+            prob_y: list[float] = []
+            prob_n: list[int] = []
+            for lo, hi in zip(prob_edges[:-1], prob_edges[1:]):
+                if hi <= lo:
+                    continue
+                if hi == prob_edges[-1]:
+                    mask = (start_rel_values >= lo) & (start_rel_values <= hi)
+                else:
+                    mask = (start_rel_values >= lo) & (start_rel_values < hi)
+                if not np.any(mask):
+                    continue
+                total = int(np.count_nonzero(mask))
+                success = int(np.count_nonzero(np.abs(end_rel_values[mask]) <= capture_threshold))
+                prob_x.append(0.5 * (lo + hi))
+                prob_y.append(success / total if total > 0 else np.nan)
+                prob_n.append(total)
+
+            if prob_x:
+                if fit_dist is not None:
+                    x_model = np.linspace(0.0, 0.001, 500)
+                    lower = -capture_threshold - x_model
+                    upper = capture_threshold - x_model
+                    y_model = fit_dist.cdf(upper) - fit_dist.cdf(lower)
+                    ax_prob.fill_between(
+                        x_model,
+                        0.0,
+                        y_model,
+                        color="tab:blue",
+                        alpha=0.2,
+                        zorder=1,
+                    )
+                    ax_prob.plot(
+                        x_model,
+                        y_model,
+                        color="black",
+                        linewidth=2.0,
+                        linestyle="-",
+                        label="Model implied",
+                        zorder=2,
+                    )
+                else:
+                    ax_prob.text(
+                        0.5,
+                        0.5,
+                        "Model fit unavailable.",
+                        ha="center",
+                        va="center",
+                        transform=ax_prob.transAxes,
+                    )
+            else:
+                ax_prob.text(
+                    0.5,
+                    0.5,
+                    "No populated start-separation bins.",
+                    ha="center",
+                    va="center",
+                    transform=ax_prob.transAxes,
+                )
+        else:
+            ax_prob.text(
+                0.5,
+                0.5,
+                "No finite start/end separations were available.",
+                ha="center",
+                va="center",
+                transform=ax_prob.transAxes,
+            )
+
+        ax_prob.axhline(0.0, color="0.5", linewidth=0.8, linestyle="--")
+        ax_prob.axhline(1.0, color="0.5", linewidth=0.8, linestyle="--")
+        ax_prob.grid(True, alpha=0.3)
+        ax_prob.set_xlim(0.0, 0.001)
+        ax_prob.set_ylim(0.0, 1.0)
+        ax_prob.margins(x=0.0, y=0.0)
+        ax_prob.set_xlabel("Starting relative separation (f2-f1) / f1")
+        ax_prob.set_ylabel("Collision probability")
+        ax_prob.set_title(f"P(|final separation| <= {capture_threshold:.3g}) vs starting separation")
+        if fit_dist is not None:
+            ax_prob.legend(loc="best", fontsize=8)
+
+        if fit_dist is not None:
+            pair_count = num_resonators * (num_resonators - 1) / 2.0
+            sample_count = 50000
+            rng = np.random.default_rng(12345)
+            if freq_dist_mode == "equally_spaced":
+                grid = np.linspace(band_min_ghz, band_max_ghz, num_resonators, dtype=float)
+                ii, jj = np.triu_indices(num_resonators, k=1)
+                f_lo = grid[ii]
+                f_hi = grid[jj]
+                valid_pairs = f_lo > 0.0
+                rel_sep_samples = (f_hi[valid_pairs] - f_lo[valid_pairs]) / f_lo[valid_pairs]
+                dist_label = f"equally spaced {band_min_ghz:.3g}-{band_max_ghz:.3g} GHz"
+            elif freq_dist_mode == "uniform_rel_spacing_gaussian":
+                if band_min_ghz <= 0.0:
+                    base_freqs_hz = np.linspace(
+                        max(band_min_ghz, 1.0e-9) * 1.0e9,
+                        band_max_ghz * 1.0e9,
+                        num_resonators,
+                        dtype=float,
+                    )
+                else:
+                    base_freqs_hz = np.geomspace(
+                        band_min_ghz * 1.0e9,
+                        band_max_ghz * 1.0e9,
+                        num_resonators,
+                        dtype=float,
+                    )
+                jitter_hz = rng.normal(0.0, freq_jitter_hz, size=num_resonators)
+                grid_hz = np.sort(base_freqs_hz + jitter_hz)
+                grid_hz = np.clip(grid_hz, band_min_ghz * 1.0e9, band_max_ghz * 1.0e9)
+                ii, jj = np.triu_indices(num_resonators, k=1)
+                f_lo = grid_hz[ii]
+                f_hi = grid_hz[jj]
+                valid_pairs = f_lo > 0.0
+                rel_sep_samples = (f_hi[valid_pairs] - f_lo[valid_pairs]) / f_lo[valid_pairs]
+                dist_label = (
+                    f"uniform df/f {band_min_ghz:.3g}-{band_max_ghz:.3g} GHz"
+                    f" + Gaussian offset std {freq_jitter_khz:.3g} kHz"
+                )
+            else:
+                u = rng.uniform(band_min_ghz, band_max_ghz, sample_count)
+                v = rng.uniform(band_min_ghz, band_max_ghz, sample_count)
+                f_lo = np.minimum(u, v)
+                f_hi = np.maximum(u, v)
+                valid_pairs = f_lo > 0.0
+                rel_sep_samples = (f_hi[valid_pairs] - f_lo[valid_pairs]) / f_lo[valid_pairs]
+                dist_label = f"uniform {band_min_ghz:.3g}-{band_max_ghz:.3g} GHz"
+            if rel_sep_samples.size:
+                initial_pair_probs = (rel_sep_samples <= capture_threshold).astype(float)
+                lambda_initial = float(pair_count * np.mean(initial_pair_probs))
+                cdf_x_max = int(max(1, num_resonators))
+                x_counts = np.arange(1, cdf_x_max + 1, dtype=int)
+                y_cdf_initial = stats.poisson.sf(x_counts - 1, lambda_initial)
+                ax_cdf.plot(
+                    x_counts,
+                    y_cdf_initial,
+                    color="tab:gray",
+                    linewidth=1.8,
+                    linestyle="--",
+                    label=f"Initial model, E[K]={lambda_initial:.3g}",
+                )
+                step_colors = ["tab:purple", "tab:blue", "tab:green", "tab:orange", "tab:red"]
+                lambda_by_step: dict[int, float] = {}
+                delta_sample_count = 40000
+                base_delta_samples = np.asarray(
+                    fit_dist.rvs(size=(5, delta_sample_count), random_state=rng),
+                    dtype=float,
+                )
+                for step_count, color in zip(range(1, 6), step_colors):
+                    summed_delta = np.sum(base_delta_samples[:step_count, :], axis=0)
+                    summed_delta = np.sort(summed_delta[np.isfinite(summed_delta)])
+                    if summed_delta.size == 0:
+                        continue
+                    upper = capture_threshold - rel_sep_samples
+                    lower = -capture_threshold - rel_sep_samples
+                    upper_idx = np.searchsorted(summed_delta, upper, side="right")
+                    lower_idx = np.searchsorted(summed_delta, lower, side="left")
+                    model_pair_probs = (upper_idx - lower_idx) / float(summed_delta.size)
+                    model_pair_probs = np.clip(np.asarray(model_pair_probs, dtype=float), 0.0, 1.0)
+                    lambda_step = float(pair_count * np.mean(model_pair_probs))
+                    lambda_by_step[step_count] = lambda_step
+                    y_cdf = stats.poisson.sf(x_counts - 1, lambda_step)
+                    ax_cdf.plot(
+                        x_counts,
+                        y_cdf,
+                        color=color,
+                        linewidth=2.0,
+                        label=f"{step_count} step{'s' if step_count != 1 else ''}, E[K]={lambda_step:.3g}",
+                    )
+                ax_cdf.set_xlim(0, cdf_x_max)
+                ax_cdf.set_xscale("log")
+                ax_cdf.set_xlim(1, cdf_x_max)
+                ax_cdf.set_ylim(0.0, 1.0)
+                ax_cdf.set_xlabel("x collisions")
+                ax_cdf.set_ylabel("P(K >= x)")
+                ax_cdf.set_title(
+                    f"Collision Count Exceedance | N={num_resonators}, {dist_label}"
+                )
+                ax_cdf.grid(True, alpha=0.3)
+                ax_cdf.legend(loc="best", fontsize=8)
+                ax_cdf.text(
+                    0.01,
+                    0.02,
+                    "Note: E[K] from pair Monte Carlo/exact pair set; P(K>=x) from Poisson approximation.",
+                    transform=ax_cdf.transAxes,
+                    ha="left",
+                    va="bottom",
+                    fontsize=8,
+                    color="0.35",
+                )
+                lambda_expected = float(lambda_by_step.get(1, np.nan))
+            else:
+                lambda_initial = np.nan
+                lambda_expected = np.nan
+                ax_cdf.text(
+                    0.5,
+                    0.5,
+                    "No valid random pair samples were available.",
+                    ha="center",
+                    va="center",
+                    transform=ax_cdf.transAxes,
+                )
+                ax_cdf.set_axis_off()
+        else:
+            lambda_initial = np.nan
+            lambda_expected = np.nan
+            ax_cdf.text(
+                0.5,
+                0.5,
+                "Fit model unavailable for collision-count estimate.",
+                ha="center",
+                va="center",
+                transform=ax_cdf.transAxes,
+            )
+            ax_cdf.set_axis_off()
+
+        self.res_pair_dfdiff_hist_figure.tight_layout()
+        if self.res_pair_dfdiff_hist_status_var is not None:
+            pileup_text = (
+                f" Expected initial collisions: {lambda_initial:.3g}. Expected post-shift collisions: {lambda_expected:.3g}. Layout: {dist_label}."
+                if np.isfinite(lambda_expected)
+                else " Expected collisions unavailable."
+            )
+            self.res_pair_dfdiff_hist_status_var.set(
+                f"Showing {int(values_mhz.size)} (df2-df1)/f1 value(s) from {len(data['records'])} resonator pair(s) across {len(data['pair_labels'])} consecutive test pair(s). Max |f2-f1|={max_sep_mhz:.3g} MHz, bin width={bin_width_mhz:.3g}, collision +/-={capture_threshold:.3g}, peak count={int(np.max(counts)) if counts.size else 0}.{fit_summary}{pileup_text}"
+            )
+        self.res_pair_dfdiff_hist_canvas.draw_idle()
 
     @staticmethod
     def _coerce_frequency_to_scan_hz(value: float, scan: VNAScan) -> Optional[float]:
@@ -1490,6 +3511,124 @@ class DataAnalysisGUI(
         if not isinstance(assignments, dict):
             payload["assignments"] = {}
         return payload
+
+    @staticmethod
+    def _resonator_sort_key(label: str) -> tuple[int, object]:
+        text = str(label).strip()
+        try:
+            value = int(text)
+        except Exception:
+            return (1, text)
+        return (0, value)
+
+    @staticmethod
+    def _sheet_identifier_for_scan(scan: VNAScan, record: Optional[dict] = None) -> str:
+        if scan.plot_group is not None:
+            return f"Group {int(scan.plot_group)}"
+        if isinstance(record, dict):
+            identifier = str(record.get("identifier") or "").strip()
+            if identifier:
+                return identifier
+        return Path(scan.filename).name
+
+    def _normalize_sheet_resonance_identifiers(self) -> int:
+        updated_count = 0
+        for scan in self.dataset.vna_scans:
+            payload = scan.candidate_resonators.get("sheet_resonances")
+            if not isinstance(payload, dict):
+                continue
+            assignments = payload.get("assignments")
+            if not isinstance(assignments, dict):
+                continue
+            for record in assignments.values():
+                if not isinstance(record, dict):
+                    continue
+                expected = self._sheet_identifier_for_scan(scan, record)
+                current = str(record.get("identifier") or "").strip()
+                if current != expected:
+                    record["identifier"] = expected
+                    updated_count += 1
+        return updated_count
+
+    def _save_resonances_to_sheet(self, sheet_path: Path) -> int:
+        normalized_count = self._normalize_sheet_resonance_identifiers()
+        if normalized_count > 0:
+            self.dataset.processing_history.append(
+                _make_event(
+                    "normalize_sheet_resonance_identifiers",
+                    {"updated_count": int(normalized_count)},
+                )
+            )
+        row_map: dict[str, dict[str, float]] = {}
+        row_order: list[str] = []
+        resonator_numbers: set[str] = set()
+        assignment_count = 0
+
+        for scan in self.dataset.vna_scans:
+            payload = scan.candidate_resonators.get("sheet_resonances")
+            if not isinstance(payload, dict):
+                continue
+            assignments = payload.get("assignments")
+            if not isinstance(assignments, dict):
+                continue
+            for resonator_number, record in assignments.items():
+                if not isinstance(record, dict):
+                    continue
+                try:
+                    target_hz = float(record.get("frequency_hz"))
+                except Exception:
+                    continue
+                identifier = self._sheet_identifier_for_scan(scan, record)
+                if identifier not in row_map:
+                    row_map[identifier] = {}
+                    row_order.append(identifier)
+                resonator_label = str(resonator_number).strip()
+                row_map[identifier][resonator_label] = target_hz
+                resonator_numbers.add(resonator_label)
+                assignment_count += 1
+
+        if not row_map or not resonator_numbers:
+            raise ValueError("No marked resonator assignments were found on the loaded VNA scans.")
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Resonators"
+        ws.cell(row=1, column=1, value="")
+        ws.cell(row=2, column=1, value="Identifier")
+
+        ordered_resonators = sorted(resonator_numbers, key=self._resonator_sort_key)
+        for col_idx, resonator_label in enumerate(ordered_resonators, start=2):
+            ws.cell(row=1, column=col_idx, value=resonator_label)
+            ws.cell(row=2, column=col_idx, value="Frequency (Hz)")
+
+        for row_idx, identifier in enumerate(row_order, start=3):
+            ws.cell(row=row_idx, column=1, value=identifier)
+            for col_idx, resonator_label in enumerate(ordered_resonators, start=2):
+                value = row_map[identifier].get(resonator_label)
+                if value is not None:
+                    ws.cell(row=row_idx, column=col_idx, value=float(value))
+
+        sheet_path.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(sheet_path)
+        wb.close()
+
+        self.dataset.processing_history.append(
+            _make_event(
+                "save_resonances_to_sheet",
+                {
+                    "sheet_path": str(sheet_path),
+                    "sheet_name": str(ws.title),
+                    "assignment_count": int(assignment_count),
+                    "normalized_count": int(normalized_count),
+                },
+            )
+        )
+        self._mark_dirty()
+        self._autosave_dataset()
+        if normalized_count > 0:
+            self._log(f"Normalized {normalized_count} marked resonator identifier(s) before sheet export.")
+        self._log(f"Saved {assignment_count} resonator assignment(s) to {sheet_path}")
+        return assignment_count
 
     def _load_resonances_from_sheet(self, sheet_path: Path) -> int:
         wb = load_workbook(sheet_path, data_only=True, read_only=True)
@@ -1585,6 +3724,7 @@ class DataAnalysisGUI(
         return assignment_count
 
     def _collect_attached_resonance_rows(self) -> tuple[list[dict], dict[int, str], list[int], list[str], str]:
+        self._normalize_sheet_resonance_identifiers()
         grouped_rows: dict[int, dict] = {}
         column_headers: dict[int, str] = {}
         warnings: list[str] = []
@@ -1605,7 +3745,7 @@ class DataAnalysisGUI(
                     col_idx = int(record.get("column"))
                     target_hz = float(record.get("frequency_hz"))
                 except Exception:
-                    warnings.append(f"{Path(scan.filename).name}: skipped malformed attached resonator record.")
+                    warnings.append(f"{Path(scan.filename).name}: skipped malformed resonator marker record.")
                     continue
                 identifier = str(record.get("identifier") or Path(scan.filename).name)
                 sheet_path = str(record.get("sheet_path") or "")
@@ -1629,7 +3769,7 @@ class DataAnalysisGUI(
                 }
 
         if not grouped_rows or not column_headers:
-            raise ValueError("No attached resonator assignments were found on the loaded VNA scans.")
+            raise ValueError("No marked resonator assignments were found on the loaded VNA scans.")
 
         row_records = [grouped_rows[idx] for idx in sorted(grouped_rows)]
         data_columns = sorted(column_headers)
@@ -1811,7 +3951,7 @@ class DataAnalysisGUI(
                 )
 
             fig.suptitle(
-                f"Attached Resonance Plots | mode={'baseline normalized' if data_mode == 'normalized' else 'raw'} | page {page_idx}"
+                f"Resonator Marker Plots | mode={'baseline normalized' if data_mode == 'normalized' else 'raw'} | page {page_idx}"
                 + (f" | {source_label}" if source_label else ""),
                 fontsize=12,
             )
@@ -1841,16 +3981,211 @@ class DataAnalysisGUI(
             self._log(f"Attached resonance plot warning: {warning}")
         return saved_paths
 
-    def _plot_attached_resonances(self, *, data_mode: str) -> list[Path]:
-        row_records, column_headers, data_columns, warnings, source_label = self._collect_attached_resonance_rows()
-        return self._plot_resonance_rows(
-            row_records=row_records,
-            column_headers=column_headers,
-            data_columns=data_columns,
-            data_mode=data_mode,
-            warnings=warnings,
-            source_label=source_label,
+    def _plot_attached_resonances_draw_page(
+        self,
+        ax,
+        rows: list[dict],
+        *,
+        spacing: float = 1.5,
+        truncate_threshold: float = 1.5,
+        xlim_ghz: Optional[tuple[float, float]] = None,
+        title: str = "",
+    ) -> int:
+        offset_by_scan_key, tick_info = self._attached_resonance_editor_offset_map(rows, spacing)
+        resonator_tracks: dict[str, list[tuple[float, float]]] = {}
+        resonator_markers: list[dict] = []
+        marker_count = 0
+        x_range_ghz = xlim_ghz
+
+        for row in rows:
+            offset = float(offset_by_scan_key[str(row["scan_key"])])
+            freq_ghz = np.asarray(row["freq"], dtype=float) / 1.0e9
+            amp_display = np.minimum(np.asarray(row["amp"], dtype=float), truncate_threshold)
+            y = amp_display + offset
+            ax.plot(freq_ghz, y, linewidth=1.0, color="tab:blue", alpha=0.8, zorder=1)
+
+            for resonator in row["resonators"]:
+                target_hz = float(resonator["target_hz"])
+                target_ghz = target_hz / 1.0e9
+                y_pt = self._interpolate_y(row["freq"], amp_display, target_hz) + offset
+                resonator_number = str(resonator["resonator_number"])
+                resonator_markers.append(
+                    {
+                        "resonator_number": resonator_number,
+                        "x_ghz": target_ghz,
+                        "y": y_pt,
+                    }
+                )
+                resonator_tracks.setdefault(resonator_number, []).append((target_ghz, y_pt))
+                marker_count += 1
+
+        for resonator_number, points in resonator_tracks.items():
+            if x_range_ghz is not None:
+                points = [pt for pt in points if x_range_ghz[0] <= pt[0] <= x_range_ghz[1]]
+            if len(points) < 2:
+                continue
+            points = sorted(points, key=lambda item: item[1], reverse=True)
+            ax.plot(
+                [pt[0] for pt in points],
+                [pt[1] for pt in points],
+                linestyle=":",
+                linewidth=1.0,
+                color="tab:red",
+                alpha=0.9,
+                zorder=2,
+            )
+
+        for point in resonator_markers:
+            if x_range_ghz is not None and not (x_range_ghz[0] <= point["x_ghz"] <= x_range_ghz[1]):
+                continue
+            ax.plot(
+                [point["x_ghz"]],
+                [point["y"]],
+                linestyle="none",
+                marker="o",
+                markersize=6,
+                markerfacecolor="none",
+                markeredgecolor="tab:red",
+                markeredgewidth=1.5,
+                zorder=4,
+            )
+            ax.text(
+                point["x_ghz"],
+                point["y"] - 0.18,
+                point["resonator_number"],
+                ha="center",
+                va="top",
+                fontsize=8,
+                color="tab:red",
+                zorder=5,
+            )
+
+        y_low = min(
+            float(np.min(np.minimum(np.asarray(row["amp"], dtype=float), truncate_threshold)))
+            + float(offset_by_scan_key[str(row["scan_key"])])
+            for row in rows
         )
+        y_high = max(
+            float(np.max(np.minimum(np.asarray(row["amp"], dtype=float), truncate_threshold)))
+            + float(offset_by_scan_key[str(row["scan_key"])])
+            for row in rows
+        )
+        freq_min = min(float(row["freq"][0]) for row in rows) / 1.0e9
+        freq_max = max(float(row["freq"][-1]) for row in rows) / 1.0e9
+        x_pad = max((freq_max - freq_min) * 0.01, 1e-6)
+
+        ax.set_xlabel("Frequency (GHz)")
+        ax.set_ylabel("Normalized |S21| + vertical offset")
+        ax.set_yticks([item[0] for item in tick_info])
+        ax.set_yticklabels([item[1] for item in tick_info], fontsize=8)
+        ax.set_ylim(y_low - 0.2, y_high + 0.2)
+        if xlim_ghz is None:
+            ax.set_xlim(freq_min - 0.5 * x_pad, freq_max + 2.0 * x_pad)
+        else:
+            ax.set_xlim(xlim_ghz)
+        ax.grid(True, alpha=0.3)
+        if title:
+            ax.set_title(title, fontsize=11)
+        return marker_count
+
+    def _plot_attached_resonances(
+        self,
+        *,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> list[Path]:
+        rows, warnings = self._selected_scans_for_attached_resonance_editor()
+        if not rows:
+            raise ValueError("No selected scans with normalized data are available for resonator-marker plotting.")
+
+        out_dir = _dataset_dir(self.dataset) / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_resonator_marker_plots"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = out_dir / "resonator_markers.pdf"
+
+        freq_min_hz = min(float(row["freq"][0]) for row in rows)
+        freq_max_hz = max(float(row["freq"][-1]) for row in rows)
+        marker_freqs_hz = sorted(
+            float(resonator["target_hz"])
+            for row in rows
+            for resonator in row["resonators"]
+        )
+        zoom_span_hz = 100.0e6
+        zoom_step_hz = 80.0e6
+        zoom_windows: list[tuple[float, float]] = []
+        if marker_freqs_hz and freq_max_hz - freq_min_hz > zoom_span_hz:
+            start_hz = freq_min_hz
+            seen_starts: set[float] = set()
+            while True:
+                rounded_start = round(start_hz, 3)
+                if rounded_start in seen_starts:
+                    break
+                seen_starts.add(rounded_start)
+                end_hz = min(start_hz + zoom_span_hz, freq_max_hz)
+                if any(start_hz <= marker_hz <= end_hz for marker_hz in marker_freqs_hz):
+                    zoom_windows.append((start_hz, end_hz))
+                if end_hz >= freq_max_hz:
+                    break
+                next_start = start_hz + zoom_step_hz
+                if next_start + zoom_span_hz > freq_max_hz:
+                    next_start = max(freq_min_hz, freq_max_hz - zoom_span_hz)
+                if next_start <= start_hz:
+                    break
+                start_hz = next_start
+
+        total_pages = 1 + len(zoom_windows)
+        page_count = 0
+        marker_count = 0
+        with PdfPages(pdf_path) as pdf:
+            fig = Figure(figsize=(12, 7))
+            ax = fig.add_subplot(111)
+            marker_count += self._plot_attached_resonances_draw_page(
+                ax,
+                rows,
+                title="Resonator Markers | Full Span",
+            )
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+            page_count += 1
+            if progress_callback is not None:
+                progress_callback(page_count, total_pages)
+
+            for page_idx, (lo_hz, hi_hz) in enumerate(zoom_windows, start=1):
+                fig = Figure(figsize=(12, 7))
+                ax = fig.add_subplot(111)
+                marker_count += self._plot_attached_resonances_draw_page(
+                    ax,
+                    rows,
+                    xlim_ghz=(lo_hz / 1.0e9, hi_hz / 1.0e9),
+                    title=(
+                        f"Resonator Markers | Zoom {page_idx} | "
+                        f"{lo_hz / 1.0e9:.6f} to {hi_hz / 1.0e9:.6f} GHz"
+                    ),
+                )
+                fig.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+                page_count += 1
+                if progress_callback is not None:
+                    progress_callback(page_count, total_pages)
+
+        self.dataset.processing_history.append(
+            _make_event(
+                "plot_attached_resonances",
+                {
+                    "page_count": int(page_count),
+                    "plot_count": int(marker_count),
+                    "output_pdf": str(pdf_path),
+                    "zoom_span_mhz": 100.0,
+                    "zoom_overlap_mhz": 20.0,
+                },
+            )
+        )
+        self._mark_dirty()
+        self._autosave_dataset()
+        for warning in warnings[:20]:
+            self._log(f"Resonator marker plot warning: {warning}")
+        self._log(f"Saved resonator marker PDF: {pdf_path}")
+        return [pdf_path]
 
     def open_attached_resonance_editor(self) -> None:
         scans = self._selected_scans()
@@ -1867,15 +4202,13 @@ class DataAnalysisGUI(
             return
 
         self.attached_res_edit_window = tk.Toplevel(self.root)
-        self.attached_res_edit_window.title("Edit Attached Resonators")
+        self.attached_res_edit_window.title("Edit Resonator Markers")
         self.attached_res_edit_window.geometry("1320x900")
         self.attached_res_edit_window.protocol("WM_DELETE_WINDOW", self._attached_resonance_editor_exit)
 
         controls = tk.Frame(self.attached_res_edit_window, padx=8, pady=8)
         controls.pack(side="top", fill="x")
-        self.attached_res_edit_status_var = tk.StringVar(
-            value="Normalized selected scans will be plotted."
-        )
+        self.attached_res_edit_status_var = tk.StringVar(value="Normalized selected scans will be plotted.")
         tk.Label(controls, textvariable=self.attached_res_edit_status_var, anchor="w").pack(
             side="left", fill="x", expand=True
         )
@@ -1957,6 +4290,13 @@ class DataAnalysisGUI(
             textvariable=self.attached_res_edit_working_number_var,
         )
         self.attached_res_edit_working_number_spinbox.pack(side="left")
+        self.attached_res_edit_renumber_button = tk.Button(
+            controls,
+            text="Renumber Low->High",
+            width=18,
+            command=self._attached_resonance_editor_renumber_low_to_high,
+        )
+        self.attached_res_edit_renumber_button.pack(side="right", padx=(8, 0))
         self.attached_res_edit_undo_button = tk.Button(
             controls, text="Undo", width=10, command=self._attached_resonance_editor_undo
         )
@@ -2018,6 +4358,7 @@ class DataAnalysisGUI(
         self.attached_res_edit_truncate_threshold_var = None
         self.attached_res_edit_truncate_threshold_scale = None
         self.attached_res_edit_add_button = None
+        self.attached_res_edit_renumber_button = None
         self.attached_res_edit_undo_button = None
         self.attached_res_edit_save_button = None
         self.attached_res_edit_exit_button = None
@@ -2081,7 +4422,7 @@ class DataAnalysisGUI(
         else:
             self._attached_res_edit_selected = None
         if self.attached_res_edit_working_number_var is not None:
-            working_number = str(snapshot.get("working_number", self._attached_resonance_editor_next_unused_number()))
+            working_number = str(snapshot.get("working_number", self._attached_resonance_editor_next_number()))
             self.attached_res_edit_working_number_var.set(working_number)
         self._refresh_status()
         self._reload_transcript_ui()
@@ -2110,7 +4451,7 @@ class DataAnalysisGUI(
             self.attached_res_edit_status_var.set("Attached resonator edits saved.")
         self._attached_resonance_editor_update_undo_button()
         self._attached_resonance_editor_update_save_button()
-        self._log("Saved attached resonator edits.")
+        self._log("Saved resonator marker edits.")
         return True
 
     def _attached_resonance_editor_exit(self) -> None:
@@ -2119,8 +4460,8 @@ class DataAnalysisGUI(
             return
         dialog = messagebox.Message(
             parent=self.attached_res_edit_window,
-            title="Save attached resonator edits?",
-            message="Save attached resonator edits before exiting?",
+            title="Save resonator marker edits?",
+            message="Save resonator marker edits before exiting?",
             icon=messagebox.WARNING,
             type=messagebox.YESNOCANCEL,
             default=messagebox.YES,
@@ -2535,7 +4876,80 @@ class DataAnalysisGUI(
         self._attached_resonance_editor_update_undo_button()
         self._attached_resonance_editor_update_save_button()
         if self.attached_res_edit_status_var is not None:
-            self.attached_res_edit_status_var.set("Undid last attached resonator edit.")
+            self.attached_res_edit_status_var.set("Undid last resonator marker edit.")
+        self._render_attached_resonance_editor()
+
+    def _attached_resonance_editor_renumber_low_to_high(self) -> None:
+        selected_scans = self._selected_scans()
+        resonator_values: dict[str, list[float]] = {}
+        for scan in selected_scans:
+            payload = scan.candidate_resonators.get("sheet_resonances")
+            assignments = payload.get("assignments") if isinstance(payload, dict) else {}
+            if not isinstance(assignments, dict):
+                continue
+            for resonator_number, record in assignments.items():
+                if not isinstance(record, dict):
+                    continue
+                try:
+                    freq_hz = float(record.get("frequency_hz"))
+                except Exception:
+                    continue
+                if not np.isfinite(freq_hz):
+                    continue
+                label = str(resonator_number).strip()
+                if not label:
+                    continue
+                resonator_values.setdefault(label, []).append(freq_hz)
+
+        ordered_labels = sorted(
+            (label for label, values in resonator_values.items() if values),
+            key=lambda label: (
+                float(np.mean(np.asarray(resonator_values[label], dtype=float))),
+                self._resonator_sort_key(label),
+            ),
+        )
+        if not ordered_labels:
+            if self.attached_res_edit_status_var is not None:
+                self.attached_res_edit_status_var.set("No resonator markers are available to renumber.")
+            return
+
+        renumber_map = {
+            old_label: str(new_idx)
+            for new_idx, old_label in enumerate(ordered_labels, start=1)
+        }
+        if all(old_label == new_label for old_label, new_label in renumber_map.items()):
+            if self.attached_res_edit_status_var is not None:
+                self.attached_res_edit_status_var.set("Resonator markers are already numbered low to high.")
+            return
+
+        self._attached_resonance_editor_push_undo_snapshot()
+        for scan in selected_scans:
+            payload = scan.candidate_resonators.get("sheet_resonances")
+            assignments = payload.get("assignments") if isinstance(payload, dict) else {}
+            if not isinstance(assignments, dict) or not assignments:
+                continue
+            new_assignments: dict[str, dict] = {}
+            for resonator_number, record in assignments.items():
+                if not isinstance(record, dict):
+                    continue
+                new_label = renumber_map.get(str(resonator_number).strip())
+                if new_label is None:
+                    continue
+                new_assignments[new_label] = record
+            payload["assignments"] = new_assignments
+
+        if self._attached_res_edit_selected is not None:
+            selected_scan_key, selected_number = self._attached_res_edit_selected
+            mapped = renumber_map.get(str(selected_number).strip())
+            self._attached_res_edit_selected = (selected_scan_key, mapped) if mapped is not None else None
+        self._attached_res_edit_changed = True
+        self._attached_resonance_editor_reset_working_number()
+        self._attached_resonance_editor_update_save_button()
+        self._attached_resonance_editor_update_undo_button()
+        if self.attached_res_edit_status_var is not None:
+            self.attached_res_edit_status_var.set(
+                f"Renumbered {len(ordered_labels)} resonator marker(s) from low to high mean frequency."
+            )
         self._render_attached_resonance_editor()
 
     def _attached_resonance_editor_working_number(self) -> str:
@@ -2550,8 +4964,8 @@ class DataAnalysisGUI(
             self.attached_res_edit_working_number_var.set(str(number))
         return str(number)
 
-    def _attached_resonance_editor_next_unused_number(self) -> str:
-        used_numbers: set[int] = set()
+    def _attached_resonance_editor_next_number(self) -> str:
+        max_number = 0
         for scan in self._selected_scans():
             payload = scan.candidate_resonators.get("sheet_resonances")
             assignments = payload.get("assignments") if isinstance(payload, dict) else {}
@@ -2563,16 +4977,13 @@ class DataAnalysisGUI(
                 except Exception:
                     continue
                 if parsed >= 1:
-                    used_numbers.add(parsed)
-        candidate = 1
-        while candidate in used_numbers:
-            candidate += 1
-        return str(candidate)
+                    max_number = max(max_number, parsed)
+        return str(max_number + 1)
 
     def _attached_resonance_editor_reset_working_number(self) -> None:
         if self.attached_res_edit_working_number_var is None:
             return
-        self.attached_res_edit_working_number_var.set(self._attached_resonance_editor_next_unused_number())
+        self.attached_res_edit_working_number_var.set(self._attached_resonance_editor_next_number())
 
     def _attached_resonance_editor_delete_selected(self) -> None:
         if self._attached_res_edit_selected is None:
@@ -2689,23 +5100,34 @@ class DataAnalysisGUI(
         offset_by_scan_key: dict[str, float],
         click_hz: float,
         y_val: float,
-    ) -> tuple[Optional[dict], Optional[float]]:
-        candidate_rows: list[tuple[dict, float, float]] = []
+    ) -> Optional[dict]:
+        group_offsets_in_order: list[float] = []
+        seen_offsets: set[float] = set()
         for row in rows:
+            offset = float(offset_by_scan_key.get(str(row["scan_key"]), 0.0))
+            if offset in seen_offsets:
+                continue
+            seen_offsets.add(offset)
+            group_offsets_in_order.append(offset)
+
+        chosen_offset = None
+        for offset in group_offsets_in_order:
+            if offset <= float(y_val) <= offset + 1.0:
+                chosen_offset = offset
+                break
+        if chosen_offset is None:
+            return None
+
+        for row in rows:
+            offset = float(offset_by_scan_key.get(str(row["scan_key"]), 0.0))
+            if abs(offset - chosen_offset) > 1e-12:
+                continue
             freq_arr = np.asarray(row["freq"], dtype=float)
             if freq_arr.size == 0:
                 continue
             if float(freq_arr[0]) <= float(click_hz) <= float(freq_arr[-1]):
-                offset = float(offset_by_scan_key.get(str(row["scan_key"]), 0.0))
-                amp_display = self._attached_resonance_editor_display_amp(row["amp"])
-                y_trace = self._interpolate_y(freq_arr, amp_display, click_hz) + offset
-                candidate_rows.append((row, offset, abs(y_trace - y_val)))
-        if not candidate_rows:
-            return None, None
-        nearest_offset = min(candidate_rows, key=lambda item: item[2])[1]
-        same_level_rows = [item for item in candidate_rows if abs(item[1] - nearest_offset) <= 1e-12]
-        chosen_row, _offset, chosen_distance = same_level_rows[0]
-        return chosen_row, chosen_distance
+                return row
+        return None
 
     def _show_attached_resonance_minimum_search_diagnostic(
         self,
@@ -2790,7 +5212,7 @@ class DataAnalysisGUI(
             return
         visible_range_hz = self._attached_resonance_editor_visible_range_hz()
         click_hz = x_ghz * 1.0e9
-        best_row, best_distance = self._attached_resonance_editor_row_for_add_click(
+        best_row = self._attached_resonance_editor_row_for_add_click(
             rows,
             offset_by_scan_key,
             click_hz,
@@ -2798,11 +5220,9 @@ class DataAnalysisGUI(
         )
         if best_row is None:
             if self.attached_res_edit_status_var is not None:
-                self.attached_res_edit_status_var.set("No plotted scan covers that click frequency.")
-            return
-        if best_distance is not None and best_distance > 0.35:
-            if self.attached_res_edit_status_var is not None:
-                self.attached_res_edit_status_var.set("Click closer to a scan trace to add a resonator.")
+                self.attached_res_edit_status_var.set(
+                    "Click inside a group's 0-1 band at a frequency covered by that group's first plotted scan."
+                )
             return
         if visible_range_hz is not None:
             lo_hz, hi_hz = visible_range_hz
@@ -2862,7 +5282,7 @@ class DataAnalysisGUI(
             "sheet_name": "",
             "row": 0,
             "column": 0,
-            "identifier": Path(scan.filename).name,
+            "identifier": self._sheet_identifier_for_scan(scan),
         }
         self.dataset.processing_history.append(
             _make_event(
