@@ -51,6 +51,8 @@ def _load_dataset(dataset_path: Path) -> Dataset:
 def _normalize_dataset(dataset: Dataset, dataset_path: Path) -> Dataset:
     # Development mode: assume current schema and avoid compatibility shims.
     dataset.source_file = str(dataset_path.resolve())
+    if not hasattr(dataset, "res_neighbor_initial_date"):
+        dataset.res_neighbor_initial_date = ""
     for scan in dataset.vna_scans:
         if not hasattr(scan, "plot_group"):
             scan.plot_group = None

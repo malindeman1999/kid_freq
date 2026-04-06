@@ -51,6 +51,7 @@ class Dataset:
     last_saved_at: str = ""
     dataset_name: str = ""
     created_at: str = ""
+    res_neighbor_initial_date: str = ""
     transcript: List[Dict[str, str]] = field(default_factory=list)
     processing_history: List[Dict[str, object]] = field(default_factory=list)
 
