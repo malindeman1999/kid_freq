@@ -7,13 +7,30 @@ import numpy as np
 import tkinter as tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog, ttk
 
 from ..analysis_io import _dataset_dir
 from ..analysis_models import _make_event, _read_polar_series
 
 
 class AnalysisSelectorPlotMixin:
+    def _saved_scan_selections(self) -> dict[str, list[str]]:
+        saved = getattr(self.dataset, "saved_scan_selections", None)
+        if not isinstance(saved, dict):
+            saved = {}
+            self.dataset.saved_scan_selections = saved
+        normalized: dict[str, list[str]] = {}
+        for name, keys in saved.items():
+            clean_name = str(name).strip()
+            if not clean_name:
+                continue
+            if isinstance(keys, list):
+                normalized[clean_name] = [str(key) for key in keys if str(key).strip()]
+        if normalized != saved:
+            self.dataset.saved_scan_selections = normalized
+            saved = normalized
+        return saved
+
     def open_analysis_selector(self) -> None:
         if not self.dataset.vna_scans:
             messagebox.showwarning("No data", "No VNA scans are loaded in this dataset.")
@@ -30,8 +47,11 @@ class AnalysisSelectorPlotMixin:
         listbox = tk.Listbox(selector, width=120, height=14, selectmode=tk.MULTIPLE)
         listbox.pack(fill="both", expand=True, padx=10, pady=4)
 
+        key_to_index: dict[str, int] = {}
+        key_to_label: dict[str, str] = {}
         selected_keys = set(self.dataset.selected_scan_keys)
         for idx, scan in enumerate(self.dataset.vna_scans):
+            scan_key = self._scan_key(scan)
             file_timestamp = str(getattr(scan, "file_timestamp", "")).strip() or "unknown"
             group_text = f" | group {int(scan.plot_group)}" if scan.plot_group is not None else ""
             label = (
@@ -39,8 +59,121 @@ class AnalysisSelectorPlotMixin:
                 f"file {file_timestamp} | loaded {scan.loaded_at}{group_text}"
             )
             listbox.insert(tk.END, label)
-            if self._scan_key(scan) in selected_keys:
+            key_to_index[scan_key] = idx
+            key_to_label[scan_key] = label
+            if scan_key in selected_keys:
                 listbox.selection_set(idx)
+
+        preset_var = tk.StringVar()
+        preset_frame = tk.Frame(selector)
+        preset_frame.pack(fill="x", padx=10, pady=(2, 6))
+        tk.Label(preset_frame, text="Saved selections:").pack(side="left")
+        preset_combo = ttk.Combobox(preset_frame, textvariable=preset_var, state="readonly", width=32)
+        preset_combo.pack(side="left", padx=(8, 8))
+
+        def _refresh_preset_choices(*, preferred: str = "") -> None:
+            names = sorted(self._saved_scan_selections())
+            preset_combo.configure(values=names)
+            if preferred and preferred in names:
+                preset_var.set(preferred)
+            elif names:
+                if preset_var.get() not in names:
+                    preset_var.set(names[0])
+            else:
+                preset_var.set("")
+
+        def _selected_indices() -> tuple[int, ...]:
+            return tuple(int(i) for i in listbox.curselection())
+
+        def _load_saved_selection() -> None:
+            preset_name = str(preset_var.get()).strip()
+            saved = self._saved_scan_selections()
+            scan_keys = saved.get(preset_name)
+            if not preset_name or scan_keys is None:
+                messagebox.showwarning("No saved selection", "Choose a saved selection first.", parent=selector)
+                return
+            present_indices: list[int] = []
+            missing_labels: list[str] = []
+            for scan_key in scan_keys:
+                idx = key_to_index.get(str(scan_key))
+                if idx is None:
+                    missing_labels.append(key_to_label.get(str(scan_key), str(scan_key)))
+                    continue
+                present_indices.append(idx)
+            listbox.selection_clear(0, tk.END)
+            for idx in present_indices:
+                listbox.selection_set(idx)
+                listbox.see(idx)
+            if missing_labels:
+                if present_indices:
+                    message = (
+                        f"Saved selection '{preset_name}' included {len(missing_labels)} scan(s) that are no longer in the dataset.\n\n"
+                        "The remaining scans were selected."
+                    )
+                else:
+                    message = (
+                        f"Saved selection '{preset_name}' no longer matches any scans in the dataset.\n\n"
+                        "No scans were selected."
+                    )
+                if missing_labels:
+                    message += "\n\nMissing entries:\n" + "\n".join(missing_labels[:10])
+                messagebox.showwarning("Saved selection changed", message, parent=selector)
+
+        def _save_current_selection() -> None:
+            indices = _selected_indices()
+            if not indices:
+                messagebox.showwarning("No selection", "Select one or more scans before saving a named selection.", parent=selector)
+                return
+            proposed_name = simpledialog.askstring(
+                "Save Scan Selection",
+                "Enter a name for this saved scan selection:",
+                parent=selector,
+            )
+            if proposed_name is None:
+                return
+            preset_name = str(proposed_name).strip()
+            if not preset_name:
+                messagebox.showwarning("Invalid name", "Enter a non-empty selection name.", parent=selector)
+                return
+            saved = self._saved_scan_selections()
+            if preset_name in saved:
+                overwrite = messagebox.askyesno(
+                    "Overwrite Saved Selection",
+                    f"Replace the existing saved selection '{preset_name}'?",
+                    parent=selector,
+                )
+                if not overwrite:
+                    return
+            saved[preset_name] = [self._scan_key(self.dataset.vna_scans[i]) for i in indices]
+            self.dataset.saved_scan_selections = saved
+            self._mark_dirty()
+            self._refresh_status()
+            self._log(
+                f"Saved analysis scan selection '{preset_name}' with {len(indices)} scan(s)."
+            )
+            self._autosave_dataset()
+            _refresh_preset_choices(preferred=preset_name)
+
+        def _delete_saved_selection() -> None:
+            preset_name = str(preset_var.get()).strip()
+            saved = self._saved_scan_selections()
+            if not preset_name or preset_name not in saved:
+                messagebox.showwarning("No saved selection", "Choose a saved selection to delete.", parent=selector)
+                return
+            confirmed = messagebox.askyesno(
+                "Delete Saved Selection",
+                f"Delete saved selection '{preset_name}'?",
+                parent=selector,
+            )
+            if not confirmed:
+                return
+            saved.pop(preset_name, None)
+            self.dataset.saved_scan_selections = saved
+            self._mark_dirty()
+            self._refresh_status()
+            self._log(f"Deleted analysis scan selection '{preset_name}'.")
+            self._autosave_dataset()
+            _refresh_preset_choices()
 
         def apply_selection() -> None:
             indices = listbox.curselection()
@@ -61,7 +194,17 @@ class AnalysisSelectorPlotMixin:
         tk.Button(button_frame, text="Clear All", command=lambda: listbox.selection_clear(0, tk.END)).pack(
             side="left", padx=(6, 0)
         )
+        tk.Button(button_frame, text="Save Current As...", command=_save_current_selection).pack(
+            side="left", padx=(12, 0)
+        )
+        tk.Button(button_frame, text="Use Saved", command=_load_saved_selection).pack(
+            side="left", padx=(6, 0)
+        )
+        tk.Button(button_frame, text="Delete Saved", command=_delete_saved_selection).pack(
+            side="left", padx=(6, 0)
+        )
         tk.Button(button_frame, text="Apply Selection", command=apply_selection).pack(side="right")
+        _refresh_preset_choices()
 
     def plot_selected_vna_scans(self) -> None:
         if not self.dataset.vna_scans:

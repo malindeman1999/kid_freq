@@ -53,6 +53,8 @@ def _normalize_dataset(dataset: Dataset, dataset_path: Path) -> Dataset:
     dataset.source_file = str(dataset_path.resolve())
     if not hasattr(dataset, "res_neighbor_initial_date"):
         dataset.res_neighbor_initial_date = ""
+    if not hasattr(dataset, "saved_scan_selections") or not isinstance(dataset.saved_scan_selections, dict):
+        dataset.saved_scan_selections = {}
     for scan in dataset.vna_scans:
         if not hasattr(scan, "plot_group"):
             scan.plot_group = None

@@ -48,6 +48,7 @@ class Dataset:
     source_file: str
     vna_scans: List[VNAScan] = field(default_factory=list)
     selected_scan_keys: List[str] = field(default_factory=list)
+    saved_scan_selections: Dict[str, List[str]] = field(default_factory=dict)
     last_saved_at: str = ""
     dataset_name: str = ""
     created_at: str = ""
