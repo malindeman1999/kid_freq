@@ -193,9 +193,10 @@ class AnalysisSelectorPlotMixin:
             side="right", padx=(8, 0)
         )
 
+        toolbar_frame, plot_parent = self._ensure_scrollable_plot_host("plot_scans", self.plot_scans_window)
         self.plot_scans_figure = Figure(figsize=(12, 7))
-        self.plot_scans_canvas = FigureCanvasTkAgg(self.plot_scans_figure, master=self.plot_scans_window)
-        self.plot_scans_toolbar = NavigationToolbar2Tk(self.plot_scans_canvas, self.plot_scans_window)
+        self.plot_scans_canvas = FigureCanvasTkAgg(self.plot_scans_figure, master=plot_parent)
+        self.plot_scans_toolbar = NavigationToolbar2Tk(self.plot_scans_canvas, toolbar_frame)
         self.plot_scans_toolbar.update()
         self.plot_scans_toolbar.pack(side="top", fill="x")
         self.plot_scans_canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -565,6 +566,15 @@ class AnalysisSelectorPlotMixin:
         panels = self._plot_scans_panel_groups(scans)
         n = len(panels)
         x_min, x_max = self._plot_scans_global_freq_range(scans)
+        self._set_scrollable_figure_size(
+            "plot_scans",
+            self.plot_scans_figure,
+            canvas_agg=self.plot_scans_canvas,
+            width_in=6.8 * len(columns),
+            row_count=max(n, 1),
+            row_height_in=2.6,
+            min_height_in=7.0,
+        )
         axes = self.plot_scans_figure.subplots(n, len(columns), sharex=True, squeeze=False)
         missing_normalized = []
 
@@ -756,6 +766,7 @@ class AnalysisSelectorPlotMixin:
     def _plot_scans_close(self) -> None:
         if self.plot_scans_window is not None and self.plot_scans_window.winfo_exists():
             self.plot_scans_window.destroy()
+        self._destroy_scrollable_plot_host("plot_scans")
         self.plot_scans_window = None
         self.plot_scans_canvas = None
         self.plot_scans_toolbar = None

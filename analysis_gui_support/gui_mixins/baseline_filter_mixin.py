@@ -273,9 +273,10 @@ class BaselineFilterMixin:
         self.baseline_attach_button.pack(side="right", padx=(8, 0))
         self._set_attach_button_state(attached=False)
 
+        toolbar_frame, plot_parent = self._ensure_scrollable_plot_host("baseline", self.baseline_window)
         self.baseline_figure = Figure(figsize=(12, 7))
-        self.baseline_canvas = FigureCanvasTkAgg(self.baseline_figure, master=self.baseline_window)
-        self.baseline_toolbar = NavigationToolbar2Tk(self.baseline_canvas, self.baseline_window)
+        self.baseline_canvas = FigureCanvasTkAgg(self.baseline_figure, master=plot_parent)
+        self.baseline_toolbar = NavigationToolbar2Tk(self.baseline_canvas, toolbar_frame)
         self.baseline_toolbar.update()
         def _home_baseline(*_args) -> None:
             if self.baseline_figure is None or self.baseline_canvas is None:
@@ -306,6 +307,7 @@ class BaselineFilterMixin:
         if self.baseline_window is not None and self.baseline_window.winfo_exists():
             self.baseline_window.destroy()
         self._baseline_compute_running = False
+        self._destroy_scrollable_plot_host("baseline")
         self.baseline_window = None
         self.baseline_canvas = None
         self.baseline_toolbar = None
@@ -630,6 +632,15 @@ class BaselineFilterMixin:
 
             n = len(scans)
             self.baseline_figure.clear()
+            self._set_scrollable_figure_size(
+                "baseline",
+                self.baseline_figure,
+                canvas_agg=self.baseline_canvas,
+                width_in=13.0,
+                row_count=max(n, 1),
+                row_height_in=2.8,
+                min_height_in=7.0,
+            )
             axes = self.baseline_figure.subplots(n, 2, sharex=False)
             axes_arr = np.atleast_2d(axes)
             axes_list = list(axes_arr.ravel())

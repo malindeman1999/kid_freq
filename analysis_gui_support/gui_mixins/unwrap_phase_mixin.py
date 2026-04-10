@@ -155,9 +155,10 @@ class UnwrapPhaseMixin:
         self.unwrap_attach_button.pack(side="right", padx=(8, 0))
         self._unwrap_set_attach_state(attached=False)
 
+        toolbar_frame, plot_parent = self._ensure_scrollable_plot_host("unwrap", self.unwrap_window)
         self.unwrap_figure = Figure(figsize=(12, 7))
-        self.unwrap_canvas = FigureCanvasTkAgg(self.unwrap_figure, master=self.unwrap_window)
-        self.unwrap_toolbar = NavigationToolbar2Tk(self.unwrap_canvas, self.unwrap_window)
+        self.unwrap_canvas = FigureCanvasTkAgg(self.unwrap_figure, master=plot_parent)
+        self.unwrap_toolbar = NavigationToolbar2Tk(self.unwrap_canvas, toolbar_frame)
         self.unwrap_toolbar.update()
         self.unwrap_toolbar.pack(side="top", fill="x")
         self.unwrap_canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -382,6 +383,15 @@ class UnwrapPhaseMixin:
             self.unwrap_canvas.draw_idle()
             return
 
+        self._set_scrollable_figure_size(
+            "unwrap",
+            self.unwrap_figure,
+            canvas_agg=self.unwrap_canvas,
+            width_in=12.0,
+            row_count=max(len(scans), 1),
+            row_height_in=2.5,
+            min_height_in=7.0,
+        )
         axes = np.atleast_1d(self.unwrap_figure.subplots(len(scans), 1, sharex=False))
         plot_mod360 = self.unwrap_mod360_var is not None and bool(self.unwrap_mod360_var.get())
         for i, scan in enumerate(scans):
@@ -535,6 +545,7 @@ class UnwrapPhaseMixin:
     def _unwrap_close(self) -> None:
         if self.unwrap_window is not None and self.unwrap_window.winfo_exists():
             self.unwrap_window.destroy()
+        self._destroy_scrollable_plot_host("unwrap")
         self.unwrap_window = None
         self.unwrap_canvas = None
         self.unwrap_toolbar = None

@@ -83,6 +83,7 @@ class DataAnalysisGUI(
         self.root.title("VNA Data Analysis")
         self.dataset_path = _read_app_state().resolve()
         self.dataset = _load_dataset(self.dataset_path)
+        self._scrollable_plot_hosts: Dict[str, Dict[str, object]] = {}
 
         self.dataset_meta_var = tk.StringVar()
         self.dataset_label_var = tk.StringVar()
@@ -367,6 +368,90 @@ class DataAnalysisGUI(
         self._reload_transcript_ui()
         self._refresh_status()
         self._log("Application started.")
+
+    def _ensure_scrollable_plot_host(self, key: str, window: tk.Misc) -> tuple[tk.Frame, tk.Frame]:
+        host = self._scrollable_plot_hosts.get(key)
+        if host is not None:
+            return host["toolbar_frame"], host["inner_frame"]
+
+        container = tk.Frame(window)
+        container.pack(side="top", fill="both", expand=True)
+        toolbar_frame = tk.Frame(container)
+        toolbar_frame.pack(side="top", fill="x")
+        viewport = tk.Frame(container)
+        viewport.pack(side="top", fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(viewport, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+        scroll_canvas = tk.Canvas(viewport, highlightthickness=0, yscrollcommand=scrollbar.set)
+        scroll_canvas.pack(side="left", fill="both", expand=True)
+        inner_frame = tk.Frame(scroll_canvas)
+        inner_window = scroll_canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+        scrollbar.configure(command=scroll_canvas.yview)
+
+        def _sync_scrollregion(_event=None) -> None:
+            scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
+
+        def _sync_inner_width(event) -> None:
+            scroll_canvas.itemconfigure(inner_window, width=event.width)
+
+        def _on_mousewheel(event) -> str:
+            delta = int(getattr(event, "delta", 0))
+            if delta == 0:
+                return "break"
+            step = -int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
+            scroll_canvas.yview_scroll(step, "units")
+            return "break"
+
+        inner_frame.bind("<Configure>", _sync_scrollregion)
+        scroll_canvas.bind("<Configure>", _sync_inner_width)
+        scroll_canvas.bind("<MouseWheel>", _on_mousewheel)
+        inner_frame.bind("<MouseWheel>", _on_mousewheel)
+
+        self._scrollable_plot_hosts[key] = {
+            "container": container,
+            "toolbar_frame": toolbar_frame,
+            "scroll_canvas": scroll_canvas,
+            "inner_frame": inner_frame,
+        }
+        return toolbar_frame, inner_frame
+
+    def _destroy_scrollable_plot_host(self, key: str) -> None:
+        host = self._scrollable_plot_hosts.pop(key, None)
+        if host is None:
+            return
+        container = host.get("container")
+        if isinstance(container, tk.Misc) and container.winfo_exists():
+            container.destroy()
+
+    def _set_scrollable_figure_size(
+        self,
+        key: str,
+        figure: Optional[Figure],
+        *,
+        canvas_agg: Optional[FigureCanvasTkAgg] = None,
+        width_in: float,
+        row_count: int,
+        row_height_in: float,
+        min_height_in: float,
+    ) -> None:
+        if figure is None:
+            return
+        height_in = max(min_height_in, row_count * row_height_in)
+        figure.set_size_inches(width_in, height_in, forward=True)
+        if canvas_agg is not None:
+            widget = canvas_agg.get_tk_widget()
+            dpi = float(figure.get_dpi()) if figure.get_dpi() else 100.0
+            widget.configure(
+                width=max(1, int(round(width_in * dpi))),
+                height=max(1, int(round(height_in * dpi))),
+            )
+        host = self._scrollable_plot_hosts.get(key)
+        if host is None:
+            return
+        scroll_canvas = host.get("scroll_canvas")
+        if isinstance(scroll_canvas, tk.Canvas) and scroll_canvas.winfo_exists():
+            scroll_canvas.update_idletasks()
+            scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
 
     @staticmethod
     def _scan_key(scan: VNAScan) -> str:

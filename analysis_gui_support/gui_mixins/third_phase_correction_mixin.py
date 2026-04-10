@@ -98,9 +98,10 @@ class ThirdPhaseCorrectionMixin:
         self.phase3_attach_button.pack(side="right", padx=(8, 0))
         self._phase3_set_attach_state(attached=False)
 
+        toolbar_frame, plot_parent = self._ensure_scrollable_plot_host("phase3", self.phase3_window)
         self.phase3_figure = Figure(figsize=(12, 7))
-        self.phase3_canvas = FigureCanvasTkAgg(self.phase3_figure, master=self.phase3_window)
-        self.phase3_toolbar = NavigationToolbar2Tk(self.phase3_canvas, self.phase3_window)
+        self.phase3_canvas = FigureCanvasTkAgg(self.phase3_figure, master=plot_parent)
+        self.phase3_toolbar = NavigationToolbar2Tk(self.phase3_canvas, toolbar_frame)
         self.phase3_toolbar.update()
         self.phase3_toolbar.pack(side="top", fill="x")
         self.phase3_canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -198,6 +199,15 @@ class ThirdPhaseCorrectionMixin:
         saved = [(ax.get_xlim(), ax.get_ylim()) for ax in self.phase3_figure.axes]
         scans = self._selected_scans()
         self.phase3_figure.clear()
+        self._set_scrollable_figure_size(
+            "phase3",
+            self.phase3_figure,
+            canvas_agg=self.phase3_canvas,
+            width_in=12.0,
+            row_count=max(len(scans), 1),
+            row_height_in=2.5,
+            min_height_in=7.0,
+        )
         axes = np.atleast_1d(self.phase3_figure.subplots(len(scans), 1, sharex=False))
         plot_mod360 = self.phase3_mod360_var is not None and bool(self.phase3_mod360_var.get())
         for i, scan in enumerate(scans):
@@ -269,6 +279,7 @@ class ThirdPhaseCorrectionMixin:
     def _phase3_close(self) -> None:
         if self.phase3_window is not None and self.phase3_window.winfo_exists():
             self.phase3_window.destroy()
+        self._destroy_scrollable_plot_host("phase3")
         self.phase3_window = None
         self.phase3_canvas = None
         self.phase3_toolbar = None

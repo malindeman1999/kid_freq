@@ -55,9 +55,10 @@ class NormalizationMixin:
         self.norm_attach_button.pack(side="right", padx=(8, 0))
         self._norm_set_attach_state(attached=False)
 
+        toolbar_frame, plot_parent = self._ensure_scrollable_plot_host("norm", self.norm_window)
         self.norm_figure = Figure(figsize=(12, 7))
-        self.norm_canvas = FigureCanvasTkAgg(self.norm_figure, master=self.norm_window)
-        self.norm_toolbar = NavigationToolbar2Tk(self.norm_canvas, self.norm_window)
+        self.norm_canvas = FigureCanvasTkAgg(self.norm_figure, master=plot_parent)
+        self.norm_toolbar = NavigationToolbar2Tk(self.norm_canvas, toolbar_frame)
         self.norm_toolbar.update()
         self.norm_toolbar.pack(side="top", fill="x")
         self.norm_canvas.get_tk_widget().pack(fill="both", expand=True)
@@ -121,6 +122,15 @@ class NormalizationMixin:
 
         n = len(scans)
         self.norm_figure.clear()
+        self._set_scrollable_figure_size(
+            "norm",
+            self.norm_figure,
+            canvas_agg=self.norm_canvas,
+            width_in=13.0,
+            row_count=max(n, 1),
+            row_height_in=2.6,
+            min_height_in=7.0,
+        )
         axes = self.norm_figure.subplots(n, 2, sharex=False)
         axes = np.atleast_2d(axes)
 
@@ -213,6 +223,7 @@ class NormalizationMixin:
     def _norm_close(self) -> None:
         if self.norm_window is not None and self.norm_window.winfo_exists():
             self.norm_window.destroy()
+        self._destroy_scrollable_plot_host("norm")
         self.norm_window = None
         self.norm_canvas = None
         self.norm_toolbar = None

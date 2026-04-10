@@ -187,9 +187,10 @@ class InterpolationSmoothMixin:
         self.interp_attach_button.pack(side="right", padx=(8, 0))
         self._interp_set_attach_state(attached=False)
 
+        toolbar_frame, plot_parent = self._ensure_scrollable_plot_host("interp", self.interp_window)
         self.interp_figure = Figure(figsize=(12, 7))
-        self.interp_canvas = FigureCanvasTkAgg(self.interp_figure, master=self.interp_window)
-        self.interp_toolbar = NavigationToolbar2Tk(self.interp_canvas, self.interp_window)
+        self.interp_canvas = FigureCanvasTkAgg(self.interp_figure, master=plot_parent)
+        self.interp_toolbar = NavigationToolbar2Tk(self.interp_canvas, toolbar_frame)
         self.interp_toolbar.update()
         def _home_interp(*_args) -> None:
             if self.interp_figure is None or self.interp_canvas is None:
@@ -304,6 +305,15 @@ class InterpolationSmoothMixin:
 
         n = len(scans)
         self.interp_figure.clear()
+        self._set_scrollable_figure_size(
+            "interp",
+            self.interp_figure,
+            canvas_agg=self.interp_canvas,
+            width_in=13.0,
+            row_count=max(n, 1),
+            row_height_in=2.8,
+            min_height_in=7.0,
+        )
         axes = self.interp_figure.subplots(n, 2, sharex=False)
         axes = np.atleast_2d(axes)
 
@@ -462,6 +472,7 @@ class InterpolationSmoothMixin:
     def _interp_close(self) -> None:
         if self.interp_window is not None and self.interp_window.winfo_exists():
             self.interp_window.destroy()
+        self._destroy_scrollable_plot_host("interp")
         self.interp_window = None
         self.interp_canvas = None
         self.interp_toolbar = None
