@@ -271,11 +271,67 @@ def _load_vna_text_db_phase0(path: Path) -> VNAScan:
     return scan
 
 
+def _load_vna_text_complex_hz(path: Path) -> VNAScan:
+    try:
+        arr = np.loadtxt(path, dtype=float)
+    except Exception as exc:
+        raise ValueError(f"Could not parse text VNA data: {exc}") from exc
+
+    arr = np.asarray(arr, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        raise ValueError(
+            "Expected 3-column text data [frequency_Hz, real_S21, imag_S21], "
+            f"got shape {arr.shape}"
+        )
+
+    freq_hz = np.asarray(arr[:, 0], dtype=float)
+    s21_real = np.asarray(arr[:, 1], dtype=float)
+    s21_imag = np.asarray(arr[:, 2], dtype=float)
+    if not (freq_hz.size == s21_real.size == s21_imag.size):
+        raise ValueError("Frequency, real, and imaginary arrays must have the same length.")
+    if freq_hz.size < 3:
+        raise ValueError("VNA data must contain at least 3 points.")
+
+    s21_complex = s21_real + 1j * s21_imag
+
+    loaded_at = datetime.now().isoformat(timespec="seconds")
+    file_timestamp = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+    scan = VNAScan(
+        filename=str(path.resolve()),
+        source_dir=str(path.resolve().parent),
+        loaded_at=loaded_at,
+        file_timestamp=file_timestamp,
+        freq=freq_hz,
+        s21_complex_raw=s21_complex,
+        s21_phase_deg_unwrapped=None,
+    )
+    scan.processing_history.append(
+        _make_event(
+            "load_vna_text_complex_hz",
+            {
+                "filename": scan.filename,
+                "source_dir": scan.source_dir,
+                "shape": list(arr.shape),
+                "file_timestamp": scan.file_timestamp,
+            },
+        )
+    )
+    return scan
+
+
 def _load_vna_file(path: Path) -> tuple[VNAScan, str | None]:
     suffix = path.suffix.lower()
     if suffix == ".npy":
         return _load_vna_npy(path), None
     if suffix in {".txt", ".dat", ".csv"}:
+        try:
+            scan = _load_vna_text_complex_hz(path)
+        except ValueError as exc:
+            if "Expected 3-column text data" not in str(exc):
+                raise
+        else:
+            return scan, None
+
         warning = (
             f"{path.name}: assumed 2-column text format [frequency in MHz, amplitude in dB]. "
             "Converted frequency to Hz and set phase to 0 deg."
