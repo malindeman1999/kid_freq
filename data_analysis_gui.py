@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import queue
+import shutil
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -510,6 +511,7 @@ class DataAnalysisGUI(
         right_button_specs: list[dict[str, object]] = []
 
         left_button_specs.append({"text": "New Dataset", "command": self.start_new_dataset})
+        left_button_specs.append({"text": "Rename Dataset", "command": self.rename_dataset_prefix})
         self.synth_button = tk.Button(
             button_col1, text="Generate Synthetic Data", width=button_width, command=self.open_synthetic_generator_window
         )
@@ -1562,6 +1564,84 @@ class DataAnalysisGUI(
         self._mark_clean()
         self._refresh_status()
         self._log(f"Started new empty dataset: {cleaned_name}")
+
+    def rename_dataset_prefix(self) -> None:
+        if not self.dataset.dataset_name or not self.dataset.created_at:
+            messagebox.showwarning(
+                "Rename unavailable",
+                "This dataset does not have a saved prefix yet. Create or save the dataset first.",
+            )
+            return
+
+        current_name = str(self.dataset.dataset_name).strip()
+        proposed_name = simpledialog.askstring(
+            "Rename Dataset Prefix",
+            "Enter the new prefix to use for the dataset folder and pickle filename:",
+            initialvalue=current_name,
+            parent=self.root,
+        )
+        if proposed_name is None:
+            return
+
+        cleaned_name = _safe_name(proposed_name)
+        if not cleaned_name:
+            messagebox.showwarning("Invalid prefix", "Please enter a non-empty dataset prefix.")
+            return
+        if cleaned_name == current_name:
+            return
+
+        old_dataset_name = current_name
+        old_dataset_path = self.dataset_path.resolve()
+        old_dataset_source = str(self.dataset.source_file)
+        old_dataset_dir = old_dataset_path.parent.resolve()
+        old_history_len = len(self.dataset.processing_history)
+        old_dir_exists = old_dataset_dir.exists()
+        moved_dir = False
+
+        try:
+            self.dataset.dataset_name = cleaned_name
+            new_dataset_path = _dataset_pickle_path(self.dataset).resolve()
+            new_dataset_dir = new_dataset_path.parent.resolve()
+
+            if new_dataset_dir.exists():
+                raise FileExistsError(f"Target dataset folder already exists:\n{new_dataset_dir}")
+
+            if old_dir_exists and old_dataset_dir != new_dataset_dir:
+                shutil.move(str(old_dataset_dir), str(new_dataset_dir))
+                moved_dir = True
+
+            self.dataset_path = new_dataset_path
+            self.dataset.source_file = str(new_dataset_path)
+            self.dataset.processing_history.append(
+                _make_event(
+                    "rename_dataset_prefix",
+                    {
+                        "old_dataset_name": old_dataset_name,
+                        "new_dataset_name": cleaned_name,
+                        "old_dataset_path": str(old_dataset_path),
+                        "new_dataset_path": str(new_dataset_path),
+                    },
+                )
+            )
+            _save_dataset(self.dataset, self.dataset_path)
+            _write_app_state(self.dataset_path)
+            self._mark_clean()
+            self._refresh_status()
+            self._log(f"Renamed dataset prefix from {old_dataset_name} to {cleaned_name}.")
+        except Exception as exc:
+            if moved_dir and new_dataset_dir.exists() and not old_dataset_dir.exists():
+                try:
+                    shutil.move(str(new_dataset_dir), str(old_dataset_dir))
+                except Exception:
+                    pass
+            del self.dataset.processing_history[old_history_len:]
+            self.dataset.dataset_name = old_dataset_name
+            self.dataset_path = old_dataset_path
+            self.dataset.source_file = old_dataset_source
+            self._mark_dirty()
+            self._refresh_status()
+            self._log(f"Rename failed: {exc}")
+            messagebox.showerror("Rename failed", str(exc))
 
     def _selected_scans_have_attached_filter(self) -> bool:
         scans = self._selected_scans()
