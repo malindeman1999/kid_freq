@@ -98,6 +98,7 @@ class DataAnalysisGUI(
         self.phase3_button: Optional[tk.Button] = None
         self.baseline_button: Optional[tk.Button] = None
         self.interp_button: Optional[tk.Button] = None
+        self.norm_apply_large_button: Optional[tk.Button] = None
         self._dirty = False
         self.baseline_window: Optional[tk.Toplevel] = None
         self.baseline_canvas: Optional[FigureCanvasTkAgg] = None
@@ -118,6 +119,7 @@ class DataAnalysisGUI(
         self._baseline_compute_running: bool = False
         self._baseline_recompute_pending: bool = False
         self._baseline_compute_context: Dict[str, object] = {}
+        self._baseline_target_scan_keys_override: Optional[set[str]] = None
         self.interp_window: Optional[tk.Toplevel] = None
         self.interp_canvas: Optional[FigureCanvasTkAgg] = None
         self.interp_toolbar: Optional[NavigationToolbar2Tk] = None
@@ -257,6 +259,7 @@ class DataAnalysisGUI(
         self.plot_scans_show_other_phase_var: Optional[tk.BooleanVar] = None
         self.plot_scans_show_attached_res_var: Optional[tk.BooleanVar] = None
         self.plot_scans_auto_y_var: Optional[tk.BooleanVar] = None
+        self.plot_scans_use_unwrapped_phase_var: Optional[tk.BooleanVar] = None
         self.plot_scans_status_var: Optional[tk.StringVar] = None
         self.scan_evolution_window: Optional[tk.Toplevel] = None
         self.scan_evolution_canvas: Optional[FigureCanvasTkAgg] = None
@@ -551,6 +554,10 @@ class DataAnalysisGUI(
             button_col1, text="Normalize Baseline", width=button_width, command=self.open_normalization_window
         )
         left_button_specs.append({"button": self.norm_button})
+        self.norm_apply_large_button = tk.Button(
+            button_col1, text="Apply Large-Scan Baseline", width=button_width, command=self.apply_large_scan_baseline_to_selected
+        )
+        left_button_specs.append({"button": self.norm_apply_large_button})
         left_button_specs.append({"text": "Scan Evolution", "command": self.open_scan_evolution_window})
 
         self.gauss_button = tk.Button(
@@ -1402,6 +1409,53 @@ class DataAnalysisGUI(
         dialog.wait_window()
         return selected_index["value"]
 
+    def _select_multiple_setting_options(
+        self,
+        title: str,
+        prompt: str,
+        options: List[str],
+        default_indices: Optional[List[int]] = None,
+    ) -> List[int]:
+        if not options:
+            return []
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("760x420")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text=prompt, anchor="w", justify="left", wraplength=720).pack(
+            fill="x", padx=10, pady=(10, 4)
+        )
+        listbox = tk.Listbox(dialog, width=110, height=16, selectmode=tk.MULTIPLE)
+        listbox.pack(fill="both", expand=True, padx=10, pady=4)
+        for item in options:
+            listbox.insert(tk.END, item)
+
+        defaults = sorted({int(idx) for idx in (default_indices or []) if 0 <= int(idx) < len(options)})
+        if defaults:
+            for idx in defaults:
+                listbox.selection_set(idx)
+            listbox.see(defaults[0])
+
+        selected_indices: Dict[str, List[int]] = {"value": []}
+
+        def choose() -> None:
+            selected_indices["value"] = [int(idx) for idx in listbox.curselection()]
+            dialog.destroy()
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        btns = tk.Frame(dialog)
+        btns.pack(fill="x", padx=10, pady=(4, 10))
+        tk.Button(btns, text="Use Selected", command=choose).pack(side="right")
+        tk.Button(btns, text="Cancel", command=cancel).pack(side="right", padx=(0, 8))
+
+        dialog.wait_window()
+        return selected_indices["value"]
+
     def _refresh_status(self) -> None:
         created = self.dataset.created_at if self.dataset.created_at else "Unassigned"
         name = self.dataset.dataset_name if self.dataset.dataset_name else "Unassigned"
@@ -1644,7 +1698,7 @@ class DataAnalysisGUI(
             messagebox.showerror("Rename failed", str(exc))
 
     def _selected_scans_have_attached_filter(self) -> bool:
-        scans = self._selected_scans()
+        scans = self._baseline_pipeline_selected_scans()
         if not scans:
             return False
         for scan in scans:
@@ -1689,7 +1743,33 @@ class DataAnalysisGUI(
 
     def _baseline_target_scans(self) -> list[VNAScan]:
         scans = self._selected_scans()
+        if self._baseline_target_scan_keys_override is not None:
+            override = self._baseline_target_scan_keys_override
+            return [scan for scan in (scans if scans else list(self.dataset.vna_scans)) if self._scan_key(scan) in override]
         return scans if scans else list(self.dataset.vna_scans)
+
+    @staticmethod
+    def _scan_marked_omitted_from_baseline_fit(scan: VNAScan) -> bool:
+        bf = scan.baseline_filter
+        return isinstance(bf, dict) and bool(bf.get("omit_from_baseline_fit", False))
+
+    def _baseline_pipeline_selected_scans(self) -> list[VNAScan]:
+        scans = self._selected_scans()
+        if not scans:
+            return []
+        if self._baseline_target_scan_keys_override is not None:
+            override = self._baseline_target_scan_keys_override
+            return [scan for scan in scans if self._scan_key(scan) in override]
+        return [scan for scan in scans if not self._scan_marked_omitted_from_baseline_fit(scan)]
+
+    def _baseline_pipeline_omitted_selected_scans(self) -> list[VNAScan]:
+        scans = self._selected_scans()
+        if not scans:
+            return []
+        if self._baseline_target_scan_keys_override is not None:
+            override = self._baseline_target_scan_keys_override
+            return [scan for scan in scans if self._scan_key(scan) not in override]
+        return [scan for scan in scans if self._scan_marked_omitted_from_baseline_fit(scan)]
 
     def _has_valid_phase2_output(self, scan: VNAScan) -> bool:
         phase2 = scan.candidate_resonators.get("phase_correction_2")
@@ -1763,7 +1843,8 @@ class DataAnalysisGUI(
         return isinstance(payload, dict) and len(payload) > 0
 
     def _update_interp_button_state(self) -> None:
-        scans, done_count = self._selected_progress_counts(self._has_valid_interp_output)
+        scans = self._baseline_pipeline_selected_scans()
+        done_count = sum(1 for scan in scans if self._has_valid_interp_output(scan))
         self._configure_action_button(
             self.interp_button,
             available=bool(scans) and all(self._has_valid_baseline_filter_output(scan) for scan in scans),
@@ -1772,7 +1853,7 @@ class DataAnalysisGUI(
         )
 
     def _selected_scans_have_attached_interp_data(self) -> bool:
-        scans = self._selected_scans()
+        scans = self._baseline_pipeline_selected_scans()
         if not scans:
             return False
         for scan in scans:
@@ -1796,12 +1877,19 @@ class DataAnalysisGUI(
         return True
 
     def _update_norm_button_state(self) -> None:
-        scans, done_count = self._selected_progress_counts(self._has_valid_normalized_output)
+        scans = self._baseline_pipeline_selected_scans()
+        done_count = sum(1 for scan in scans if self._has_valid_normalized_output(scan))
         self._configure_action_button(
             self.norm_button,
             available=bool(scans) and all(self._has_valid_interp_output(scan) for scan in scans),
             done_count=done_count,
             total_count=len(scans),
+        )
+        self._configure_action_button(
+            self.norm_apply_large_button,
+            available=bool(scans)
+            and all(self._has_valid_phase3_output(scan) for scan in scans)
+            and any(self._has_valid_interp_output(scan) for scan in scans),
         )
 
     def _selected_scans_have_attached_normalized(self) -> bool:

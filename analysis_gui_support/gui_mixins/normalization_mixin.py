@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import tkinter as tk
@@ -14,13 +14,141 @@ from ..analysis_models import _current_user, _make_event, _read_polar_series
 
 
 class NormalizationMixin:
+    @staticmethod
+    def _scan_freq_bounds_hz(scan) -> tuple[float, float]:
+        freq = np.asarray(scan.freq, dtype=float)
+        finite = freq[np.isfinite(freq)]
+        if finite.size == 0:
+            return 0.0, 0.0
+        return float(np.min(finite)), float(np.max(finite))
+
+    def _scan_span_mhz(self, scan) -> float:
+        lo_hz, hi_hz = self._scan_freq_bounds_hz(scan)
+        return max(0.0, hi_hz - lo_hz) / 1.0e6
+
+    def _scan_is_contained_in(self, inner_scan, outer_scan) -> bool:
+        inner_lo, inner_hi = self._scan_freq_bounds_hz(inner_scan)
+        outer_lo, outer_hi = self._scan_freq_bounds_hz(outer_scan)
+        return inner_lo >= outer_lo and inner_hi <= outer_hi
+
+    @staticmethod
+    def _store_normalized_payload(scan, *, norm_amp: np.ndarray, norm_phase: np.ndarray, attached_at: str, source: str) -> bool:
+        bf = scan.baseline_filter if isinstance(scan.baseline_filter, dict) else {}
+        overwritten = isinstance(bf.get("normalized"), dict) and bool(bf.get("normalized"))
+        bf["normalized"] = {
+            "attached_at": attached_at,
+            "attached_by": _current_user(),
+            "source": source,
+            "norm_amp": np.asarray(norm_amp, dtype=float),
+            "norm_phase_deg_unwrapped": np.asarray(norm_phase, dtype=float),
+            "normalized_data_polar": np.vstack((scan.freq, norm_amp, norm_phase)),
+            "normalized_data_polar_format": "(3, N) rows = [freq, amplitude, unwrapped_phase_deg]",
+        }
+        scan.baseline_filter = bf
+        return bool(overwritten)
+
+    @staticmethod
+    def _store_interp_payload(
+        scan,
+        *,
+        interp_amp: np.ndarray,
+        interp_phase: np.ndarray,
+        smooth_amp: np.ndarray,
+        smooth_phase: np.ndarray,
+        attached_at: str,
+        source: str,
+    ) -> bool:
+        bf = scan.baseline_filter if isinstance(scan.baseline_filter, dict) else {}
+        overwritten = isinstance(bf.get("interp_smooth"), dict) and bool(bf.get("interp_smooth"))
+        bf["interp_smooth"] = {
+            "attached_at": attached_at,
+            "attached_by": _current_user(),
+            "source": source,
+            "smoothing_width_ghz": 0.0,
+            "smoothing_width_mhz": 0.0,
+            "interp_amp": np.asarray(interp_amp, dtype=float),
+            "interp_phase": np.asarray(interp_phase, dtype=float),
+            "interp_data_polar": np.vstack((scan.freq, interp_amp, interp_phase)),
+            "interp_data_polar_format": "(3, N) rows = [freq, amplitude, unwrapped_phase_deg]",
+            "smooth_amp": np.asarray(smooth_amp, dtype=float),
+            "smooth_phase": np.asarray(smooth_phase, dtype=float),
+            "smooth_data_polar": np.vstack((scan.freq, smooth_amp, smooth_phase)),
+            "smooth_data_polar_format": "(3, N) rows = [freq, amplitude, unwrapped_phase_deg]",
+        }
+        scan.baseline_filter = bf
+        return bool(overwritten)
+
+    def _borrowed_baseline_preview(self, source_scan, target_scan) -> Optional[dict[str, np.ndarray]]:
+        source_interp = source_scan.baseline_filter.get("interp_smooth", {})
+        interp_amp, interp_phase = _read_polar_series(
+            source_interp,
+            amplitude_key="interp_amp",
+            phase_key="interp_phase",
+        )
+        if interp_amp.shape != source_scan.freq.shape or interp_phase.shape != source_scan.freq.shape:
+            return None
+        smooth_amp = np.asarray(source_interp.get("smooth_amp"), dtype=float)
+        smooth_phase = np.asarray(source_interp.get("smooth_phase"), dtype=float)
+        if smooth_amp.shape != source_scan.freq.shape:
+            smooth_amp = np.asarray(interp_amp, dtype=float)
+        if smooth_phase.shape != source_scan.freq.shape:
+            smooth_phase = np.asarray(interp_phase, dtype=float)
+
+        phase3 = target_scan.candidate_resonators.get("phase_correction_3", {})
+        corrected_amp, corrected_phase = _read_polar_series(
+            phase3,
+            amplitude_key="corrected_amp",
+            phase_key="corrected_phase_deg",
+        )
+        if corrected_amp.shape != target_scan.freq.shape or corrected_phase.shape != target_scan.freq.shape:
+            return None
+
+        source_freq = np.asarray(source_scan.freq, dtype=float)
+        order = np.argsort(source_freq)
+        source_freq = source_freq[order]
+        interp_amp_sorted = np.asarray(interp_amp, dtype=float)[order]
+        interp_phase_sorted = np.asarray(interp_phase, dtype=float)[order]
+        smooth_amp_sorted = np.asarray(smooth_amp, dtype=float)[order]
+        smooth_phase_sorted = np.asarray(smooth_phase, dtype=float)[order]
+        target_freq = np.asarray(target_scan.freq, dtype=float)
+
+        borrowed_interp_amp = np.interp(target_freq, source_freq, interp_amp_sorted)
+        borrowed_interp_phase = np.interp(target_freq, source_freq, interp_phase_sorted)
+        borrowed_smooth_amp = np.interp(target_freq, source_freq, smooth_amp_sorted)
+        borrowed_smooth_phase = np.interp(target_freq, source_freq, smooth_phase_sorted)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            norm_amp = np.divide(
+                corrected_amp,
+                borrowed_interp_amp,
+                out=np.full(corrected_amp.shape, np.nan, dtype=float),
+                where=np.abs(borrowed_interp_amp) > 0,
+            )
+        norm_phase = corrected_phase - borrowed_interp_phase
+        return {
+            "interp_amp": borrowed_interp_amp,
+            "interp_phase": borrowed_interp_phase,
+            "smooth_amp": borrowed_smooth_amp,
+            "smooth_phase": borrowed_smooth_phase,
+            "norm_amp": norm_amp,
+            "norm_phase_deg_unwrapped": norm_phase,
+        }
+
     def open_normalization_window(self) -> None:
         if not self._selected_scans_have_attached_interp_data():
+            omitted = self._baseline_pipeline_omitted_selected_scans()
+            omit_msg = ""
+            if omitted:
+                omit_msg = (
+                    "\n\nSmall scans currently omitted from this step:\n"
+                    + "\n".join(Path(scan.filename).name for scan in omitted[:10])
+                )
             messagebox.showwarning(
                 "Missing interp data",
                 "Run pipeline in order:\n"
                 "Phase Correction -> Baseline Filtering -> Interp+Smooth -> Normalize Baseline.\n\n"
-                "All selected scans must have attached interpolation data first.",
+                "All baseline-eligible selected scans must have attached interpolation data first."
+                + omit_msg,
             )
             return
 
@@ -36,8 +164,14 @@ class NormalizationMixin:
         controls = tk.Frame(self.norm_window, padx=8, pady=8)
         controls.pack(side="top", fill="x")
 
+        omitted = self._baseline_pipeline_omitted_selected_scans()
+        omitted_text = ""
+        if omitted:
+            omitted_text = " Omitted small scans: " + ", ".join(Path(scan.filename).name for scan in omitted[:4])
+            if len(omitted) > 4:
+                omitted_text += f", ... (+{len(omitted) - 4} more)"
         self.norm_status_var = tk.StringVar(
-            value="Preview shows S21 / interpolated baseline. Click Attach to store."
+            value="Preview shows S21 / interpolated baseline. Click Attach to store." + omitted_text
         )
         tk.Label(controls, textvariable=self.norm_status_var, anchor="w").pack(
             side="left", fill="x", expand=True
@@ -77,7 +211,7 @@ class NormalizationMixin:
             self.norm_attach_button.configure(bg="pink", activebackground="pink")
 
     def _norm_compute_preview(self) -> None:
-        scans = self._selected_scans()
+        scans = self._baseline_pipeline_selected_scans()
         self.norm_preview = {}
         for scan in scans:
             interp = scan.baseline_filter.get("interp_smooth", {})
@@ -114,7 +248,7 @@ class NormalizationMixin:
     def _norm_render(self) -> None:
         if self.norm_figure is None or self.norm_canvas is None:
             return
-        scans = self._selected_scans()
+        scans = self._baseline_pipeline_selected_scans()
         if not scans:
             self.norm_figure.clear()
             self.norm_canvas.draw_idle()
@@ -171,7 +305,7 @@ class NormalizationMixin:
         self.norm_canvas.draw_idle()
 
     def _norm_attach(self) -> None:
-        scans = self._selected_scans()
+        scans = self._baseline_pipeline_selected_scans()
         if not scans:
             return
 
@@ -182,25 +316,19 @@ class NormalizationMixin:
             prev = self.norm_preview.get(self._scan_key(scan))
             if prev is None:
                 continue
-            if isinstance(scan.baseline_filter.get("normalized"), dict) and scan.baseline_filter["normalized"]:
-                overwritten += 1
-            # Exactly one attached normalized result per scan; overwrite prior attachment.
-            scan.baseline_filter["normalized"] = {}
-            scan.baseline_filter["normalized"] = {
-                "attached_at": attached_at,
-                "attached_by": _current_user(),
-                "source": "phase2_polar / interp_polar",
-                "norm_amp": np.asarray(prev["norm_amp"], dtype=float),
-                "norm_phase_deg_unwrapped": np.asarray(prev["norm_phase_deg_unwrapped"], dtype=float),
-                "normalized_data_polar": np.vstack(
-                    (scan.freq, prev["norm_amp"], prev["norm_phase_deg_unwrapped"])
-                ),
-                "normalized_data_polar_format": "(3, N) rows = [freq, amplitude, unwrapped_phase_deg]",
-            }
+            overwritten += int(
+                self._store_normalized_payload(
+                    scan,
+                    norm_amp=np.asarray(prev["norm_amp"], dtype=float),
+                    norm_phase=np.asarray(prev["norm_phase_deg_unwrapped"], dtype=float),
+                    attached_at=attached_at,
+                    source="phase3_polar / interp_polar",
+                )
+            )
             scan.processing_history.append(
                 _make_event(
                     "attach_normalized_baseline",
-                    {"source": "phase2_polar / interp_polar", "points": int(scan.freq.size)},
+                    {"source": "phase3_polar / interp_polar", "points": int(scan.freq.size)},
                 )
             )
             count += 1
@@ -219,6 +347,157 @@ class NormalizationMixin:
             f"Attached normalized baseline data to {count} selected scan(s); overwrote {overwritten} prior attachment(s)."
         )
         self._autosave_dataset()
+
+    def apply_large_scan_baseline_to_selected(self) -> None:
+        scans = self._selected_scans()
+        if not scans:
+            messagebox.showwarning(
+                "No selection",
+                "No scans selected for analysis.\nUse 'Select Scans for Analysis' first.",
+            )
+            return
+        source_candidates = [scan for scan in scans if self._has_valid_interp_output(scan)]
+        if not source_candidates:
+            messagebox.showwarning(
+                "Missing interp data",
+                "At least one selected scan must already have attached interpolation data to act as the large-scan baseline source.",
+            )
+            return
+        invalid_phase = [Path(scan.filename).name for scan in scans if not self._has_valid_phase3_output(scan)]
+        if invalid_phase:
+            messagebox.showwarning(
+                "Missing Phase Correction 3 output",
+                "All selected scans must have Phase Correction 3 attached before applying a large-scan baseline.\n\n"
+                + "\n".join(invalid_phase[:10]),
+            )
+            return
+
+        source_candidates = sorted(source_candidates, key=lambda scan: self._scan_span_mhz(scan), reverse=True)
+        source_labels = [
+            f"{Path(scan.filename).name} | span={self._scan_span_mhz(scan):.6f} MHz"
+            for scan in source_candidates
+        ]
+        source_pick = self._select_setting_option(
+            "Baseline Source Scan",
+            "Choose the scan whose attached interpolated baseline should be applied to smaller scans.\n"
+            "Default is the widest eligible selected scan.",
+            source_labels,
+            default_index=0,
+        )
+        if source_pick is None:
+            return
+        source_scan = source_candidates[source_pick]
+
+        target_candidates = [scan for scan in scans if self._scan_key(scan) != self._scan_key(source_scan)]
+        if not target_candidates:
+            messagebox.showwarning(
+                "No target scans",
+                "There are no other selected scans to normalize with the chosen source baseline.",
+            )
+            return
+        default_target_indices = [
+            idx for idx, scan in enumerate(target_candidates) if self._scan_is_contained_in(scan, source_scan)
+        ]
+        target_labels = [
+            f"{Path(scan.filename).name} | span={self._scan_span_mhz(scan):.6f} MHz"
+            for scan in target_candidates
+        ]
+        target_picks = self._select_multiple_setting_options(
+            "Target Scans",
+            "Choose the scans that should borrow the selected large-scan baseline.\n"
+            "Default selections are scans whose frequency range is fully contained within the source scan.",
+            target_labels,
+            default_indices=default_target_indices,
+        )
+        if not target_picks:
+            return
+
+        chosen_targets = [target_candidates[idx] for idx in target_picks]
+        valid_targets = [scan for scan in chosen_targets if self._scan_is_contained_in(scan, source_scan)]
+        invalid_targets = [scan for scan in chosen_targets if not self._scan_is_contained_in(scan, source_scan)]
+        if invalid_targets:
+            messagebox.showwarning(
+                "Source range does not contain all targets",
+                "Some selected target scans extend outside the source scan frequency range and will be skipped.\n\n"
+                + "\n".join(Path(scan.filename).name for scan in invalid_targets[:10]),
+            )
+        if not valid_targets:
+            messagebox.showwarning(
+                "No compatible targets",
+                "None of the chosen target scans fit within the selected source scan frequency range.",
+            )
+            return
+
+        attached_at = datetime.now().isoformat(timespec="seconds")
+        source_name = Path(source_scan.filename).name
+        interp_overwritten = 0
+        norm_overwritten = 0
+        applied_count = 0
+        failed_targets: list[str] = []
+        for target_scan in valid_targets:
+            preview = self._borrowed_baseline_preview(source_scan, target_scan)
+            if preview is None:
+                failed_targets.append(Path(target_scan.filename).name)
+                continue
+            interp_overwritten += int(
+                self._store_interp_payload(
+                    target_scan,
+                    interp_amp=np.asarray(preview["interp_amp"], dtype=float),
+                    interp_phase=np.asarray(preview["interp_phase"], dtype=float),
+                    smooth_amp=np.asarray(preview["smooth_amp"], dtype=float),
+                    smooth_phase=np.asarray(preview["smooth_phase"], dtype=float),
+                    attached_at=attached_at,
+                    source=f"borrowed interp baseline from {source_name}",
+                )
+            )
+            norm_overwritten += int(
+                self._store_normalized_payload(
+                    target_scan,
+                    norm_amp=np.asarray(preview["norm_amp"], dtype=float),
+                    norm_phase=np.asarray(preview["norm_phase_deg_unwrapped"], dtype=float),
+                    attached_at=attached_at,
+                    source=f"phase3_polar / borrowed interp baseline from {source_name}",
+                )
+            )
+            target_scan.processing_history.append(
+                _make_event(
+                    "apply_large_scan_baseline",
+                    {
+                        "source_scan": source_name,
+                        "points": int(target_scan.freq.size),
+                    },
+                )
+            )
+            applied_count += 1
+
+        self.dataset.processing_history.append(
+            _make_event(
+                "apply_large_scan_baseline_selected",
+                {
+                    "source_scan": source_name,
+                    "selected_target_count": len(chosen_targets),
+                    "applied_target_count": applied_count,
+                    "skipped_out_of_range_count": len(invalid_targets),
+                    "failed_count": len(failed_targets),
+                },
+            )
+        )
+        self._mark_dirty()
+        self._refresh_status()
+        self._update_norm_button_state()
+        self._autosave_dataset()
+
+        message = (
+            f"Applied {source_name} baseline to {applied_count} scan(s). "
+            f"Overwrote {interp_overwritten} interp attachment(s) and {norm_overwritten} normalized attachment(s)."
+        )
+        if failed_targets:
+            message += "\n\nFailed targets:\n" + "\n".join(failed_targets[:10])
+        messagebox.showinfo("Large-scan baseline applied", message)
+        self._log(
+            f"Applied borrowed baseline from {source_name} to {applied_count} selected scan(s); "
+            f"skipped {len(invalid_targets)} out-of-range target(s), failed {len(failed_targets)}."
+        )
 
     def _norm_close(self) -> None:
         if self.norm_window is not None and self.norm_window.winfo_exists():

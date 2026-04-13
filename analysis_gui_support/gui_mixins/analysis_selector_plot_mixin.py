@@ -242,6 +242,7 @@ class AnalysisSelectorPlotMixin:
         self.plot_scans_show_other_phase_var = tk.BooleanVar(value=False)
         self.plot_scans_show_attached_res_var = tk.BooleanVar(value=True)
         self.plot_scans_auto_y_var = tk.BooleanVar(value=True)
+        self.plot_scans_use_unwrapped_phase_var = tk.BooleanVar(value=False)
         self.plot_scans_raw_radio = tk.Radiobutton(
             controls,
             text="Raw VNA data",
@@ -268,6 +269,12 @@ class AnalysisSelectorPlotMixin:
             controls,
             text="Show phase",
             variable=self.plot_scans_show_phase_var,
+            command=self._plot_scans_on_toggle_changed,
+        ).pack(side="left", padx=(0, 12))
+        tk.Checkbutton(
+            controls,
+            text="Use unwrapped phase when available",
+            variable=self.plot_scans_use_unwrapped_phase_var,
             command=self._plot_scans_on_toggle_changed,
         ).pack(side="left", padx=(0, 12))
         tk.Checkbutton(
@@ -467,7 +474,11 @@ class AnalysisSelectorPlotMixin:
                 "amp_label": "Normalized |S21|",
             }
 
-        if scan.has_dewrapped_phase():
+        use_unwrapped = (
+            self.plot_scans_use_unwrapped_phase_var is not None
+            and bool(self.plot_scans_use_unwrapped_phase_var.get())
+        )
+        if use_unwrapped and scan.has_dewrapped_phase():
             phase = scan.phase_deg_unwrapped()
             phase_label = "Phase (dewrapped, deg)"
         else:
@@ -763,7 +774,7 @@ class AnalysisSelectorPlotMixin:
                     ax_amp.set_xlim(x_min, x_max)
                     ax_amp.grid(True, alpha=0.3)
                     ax_amp.set_title(panel_title, fontsize=9)
-                    if len(ax_amp.get_legend_handles_labels()[0]) > 0:
+                    if 0 < len(ax_amp.get_legend_handles_labels()[0]) <= 4:
                         ax_amp.legend(loc="upper right", fontsize=8)
                     if row == n - 1:
                         ax_amp.set_xlabel("Frequency (GHz)")
@@ -804,7 +815,7 @@ class AnalysisSelectorPlotMixin:
                     ax_phase.grid(True, alpha=0.3)
                     if "amp" not in columns:
                         ax_phase.set_title(panel_title, fontsize=9)
-                    if len(ax_phase.get_legend_handles_labels()[0]) > 0:
+                    if 0 < len(ax_phase.get_legend_handles_labels()[0]) <= 4:
                         ax_phase.legend(loc="upper right", fontsize=8)
                     if row == n - 1:
                         ax_phase.set_xlabel("Frequency (GHz)")
@@ -927,5 +938,6 @@ class AnalysisSelectorPlotMixin:
         self.plot_scans_show_other_phase_var = None
         self.plot_scans_show_attached_res_var = None
         self.plot_scans_auto_y_var = None
+        self.plot_scans_use_unwrapped_phase_var = None
         self.plot_scans_status_var = None
         self._plot_scans_missing_normalized_warned = None

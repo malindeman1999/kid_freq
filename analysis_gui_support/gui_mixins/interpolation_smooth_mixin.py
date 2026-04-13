@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
@@ -88,11 +89,19 @@ class InterpolationSmoothMixin:
 
     def open_interp_smooth_window(self) -> None:
         if not self._selected_scans_have_attached_filter():
+            omitted = self._baseline_pipeline_omitted_selected_scans()
+            omit_msg = ""
+            if omitted:
+                omit_msg = (
+                    "\n\nSmall scans currently omitted from this step:\n"
+                    + "\n".join(Path(scan.filename).name for scan in omitted[:10])
+                )
             messagebox.showwarning(
                 "Missing filter data",
                 "Run pipeline in order:\n"
                 "Phase Correction -> Baseline Filtering -> Interp+Smooth.\n\n"
-                "All selected scans must have attached baseline-filter data first.",
+                "All baseline-eligible selected scans must have attached baseline-filter data first."
+                + omit_msg,
             )
             return
 
@@ -100,7 +109,7 @@ class InterpolationSmoothMixin:
             self.interp_window.lift()
             return
 
-        scans = self._selected_scans()
+        scans = self._baseline_pipeline_selected_scans()
         self.interp_window = tk.Toplevel(self.root)
         self.interp_window.title("Interpolation + Smoothing")
         self.interp_window.geometry("1200x820")
@@ -164,7 +173,13 @@ class InterpolationSmoothMixin:
         self.interp_smooth_slider.bind("<ButtonRelease-1>", self._interp_on_slider_released)
         self.interp_smooth_slider.bind("<KeyRelease>", self._interp_on_slider_released)
 
-        self.interp_status_var = tk.StringVar(value="Adjust smoothing and release to update.")
+        omitted = self._baseline_pipeline_omitted_selected_scans()
+        omitted_text = ""
+        if omitted:
+            omitted_text = " Omitted small scans: " + ", ".join(Path(scan.filename).name for scan in omitted[:4])
+            if len(omitted) > 4:
+                omitted_text += f", ... (+{len(omitted) - 4} more)"
+        self.interp_status_var = tk.StringVar(value="Adjust smoothing and release to update." + omitted_text)
         tk.Label(controls, textvariable=self.interp_status_var, anchor="w").pack(
             side="left", fill="x", expand=True
         )

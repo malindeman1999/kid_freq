@@ -20,6 +20,35 @@ from ..analysis_models import VNAScan, _current_user, _make_event, _read_polar_s
 
 
 class BaselineFilterMixin:
+    @staticmethod
+    def _freq_span_mhz(freq: np.ndarray) -> float:
+        freq_arr = np.asarray(freq, dtype=float)
+        if freq_arr.size < 2:
+            return 0.0
+        finite = freq_arr[np.isfinite(freq_arr)]
+        if finite.size < 2:
+            return 0.0
+        span = float(np.max(finite) - np.min(finite))
+        median_abs = float(np.nanmedian(np.abs(finite)))
+        if median_abs > 1e6:
+            return span / 1.0e6
+        if median_abs > 1e3:
+            return span
+        return span * 1.0e3
+
+    def _baseline_partition_narrow_scans(
+        self, scans: List[VNAScan]
+    ) -> tuple[List[VNAScan], List[tuple[VNAScan, float]]]:
+        eligible: List[VNAScan] = []
+        narrow: List[tuple[VNAScan, float]] = []
+        for scan in scans:
+            span_mhz = self._freq_span_mhz(scan.freq)
+            if span_mhz < 2.0:
+                narrow.append((scan, span_mhz))
+            else:
+                eligible.append(scan)
+        return eligible, narrow
+
     def _autoscale_y_for_visible_x(self, ax) -> None:
         lines = [ln for ln in ax.get_lines() if ln.get_visible()]
         if not lines:
@@ -64,7 +93,7 @@ class BaselineFilterMixin:
             ]
             self._refresh_status()
             self._log("No prior selection. Auto-selected all scans for baseline filtering.")
-        scans = self._selected_scans()
+        scans = self._baseline_target_scans()
         if not scans:
             return
         missing_phase3 = []
@@ -89,6 +118,57 @@ class BaselineFilterMixin:
             )
             return
 
+        eligible_scans, narrow_scans = self._baseline_partition_narrow_scans(scans)
+        if narrow_scans:
+            names = "\n".join(
+                f"{Path(scan.filename).name} ({span_mhz:.6f} MHz wide)"
+                for scan, span_mhz in narrow_scans[:10]
+            )
+            ok = messagebox.askyesno(
+                "Narrow scans detected",
+                "Some selected scans are narrower than 2 MHz and may be too small to get a reliable baseline fit.\n\n"
+                "Ignore those scans and continue baseline filtering for the wider scans?\n\n"
+                + names,
+            )
+            if not ok:
+                return
+            if not eligible_scans:
+                messagebox.showwarning(
+                    "No eligible scans",
+                    "All selected scans are narrower than 2 MHz, so baseline filtering was not started.",
+                )
+                return
+            omitted_at = datetime.now().isoformat(timespec="seconds")
+            eligible_keys = [self._scan_key(scan) for scan in eligible_scans]
+            for scan in eligible_scans:
+                bf = scan.baseline_filter if isinstance(scan.baseline_filter, dict) else {}
+                bf.pop("omit_from_baseline_fit", None)
+                bf.pop("omit_from_baseline_fit_reason", None)
+                bf.pop("omit_from_baseline_fit_at", None)
+                scan.baseline_filter = bf
+            for scan, span_mhz in narrow_scans:
+                bf = scan.baseline_filter if isinstance(scan.baseline_filter, dict) else {}
+                bf["omit_from_baseline_fit"] = True
+                bf["omit_from_baseline_fit_reason"] = (
+                    f"Scan span {span_mhz:.6f} MHz is below the 2 MHz baseline-fit threshold."
+                )
+                bf["omit_from_baseline_fit_at"] = omitted_at
+                scan.baseline_filter = bf
+            self._baseline_target_scan_keys_override = set(eligible_keys)
+            self._refresh_status()
+            self._log(
+                f"Ignoring {len(narrow_scans)} narrow scan(s) under 2 MHz for baseline filtering while leaving the active selection unchanged."
+            )
+            scans = eligible_scans
+        else:
+            for scan in scans:
+                bf = scan.baseline_filter if isinstance(scan.baseline_filter, dict) else {}
+                bf.pop("omit_from_baseline_fit", None)
+                bf.pop("omit_from_baseline_fit_reason", None)
+                bf.pop("omit_from_baseline_fit_at", None)
+                scan.baseline_filter = bf
+            self._baseline_target_scan_keys_override = None
+
         if self.baseline_window is not None and self.baseline_window.winfo_exists():
             self.baseline_window.lift()
             self._schedule_baseline_preview()
@@ -102,7 +182,7 @@ class BaselineFilterMixin:
         controls = tk.Frame(self.baseline_window, padx=8, pady=8)
         controls.pack(side="top", fill="x")
 
-        scans = self._selected_scans()
+        scans = self._baseline_target_scans()
         resolution_mhz = _estimate_frequency_resolution_mhz(scans)
         min_mhz = min(max(resolution_mhz, 1e-6), 10.0)
         max_mhz = 10.0
@@ -390,7 +470,7 @@ class BaselineFilterMixin:
             or self.center_slider is None
         ):
             return None
-        scans = self._selected_scans()
+        scans = self._baseline_target_scans()
         if not scans:
             return None
         width_ghz = float(self.width_slider.get()) / 1000.0
@@ -615,7 +695,7 @@ class BaselineFilterMixin:
             saved_x_limits = []
             for ax_old in self.baseline_figure.axes:
                 saved_x_limits.append(ax_old.get_xlim())
-            scans = self._selected_scans()
+            scans = self._baseline_target_scans()
             if not scans:
                 self.baseline_figure.clear()
                 ax = self.baseline_figure.add_subplot(111)
@@ -732,7 +812,7 @@ class BaselineFilterMixin:
             messagebox.showwarning("Compute running", "Wait for compute to finish before Attach.")
             return
 
-        scans = self._selected_scans()
+        scans = self._baseline_target_scans()
         if not scans:
             messagebox.showwarning("No selection", "No scans selected for analysis.")
             return
