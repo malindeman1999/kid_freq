@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import queue
+import re
 import shutil
 import threading
 from datetime import datetime
@@ -20,6 +21,11 @@ from matplotlib.ticker import FuncFormatter
 from scipy import stats
 from tkinter import filedialog, messagebox, simpledialog, scrolledtext, ttk
 
+try:
+    import winsound
+except Exception:  # pragma: no cover - non-Windows fallback
+    winsound = None
+
 from analysis_gui_support.analysis_io import (
     DATASETS_DIR,
     DEFAULT_DATASET_FILE,
@@ -27,6 +33,7 @@ from analysis_gui_support.analysis_io import (
     _dataset_pickle_path,
     _load_dataset,
     _load_vna_file,
+    _try_load_vna_npy_pair,
     _read_app_state,
     _safe_name,
     _save_dataset,
@@ -569,17 +576,19 @@ class DataAnalysisGUI(
         )
         right_button_specs.append({"button": self.dsdf_button})
         self.res_button = tk.Button(
-            button_col2, text="Resonance Selection", width=button_width, command=self.open_resonance_selection_window
+            button_col2, text="Resonance Fitting", width=button_width, command=self.open_resonance_selection_window
         )
         right_button_specs.append({"button": self.res_button})
         right_button_specs.append({"text": "Mark Res. on Sel. Scans", "command": self.open_attached_resonance_editor})
         right_button_specs.append(
             {
-                "text": "Clear Selected Markers",
+                "text": "Reset Selected Scans",
                 "command": self.clear_selected_scan_attachments,
             }
         )
         right_button_specs.append({"text": "Plot Resonator Markers", "command": self.open_attached_resonance_plotter})
+        right_button_specs.append({"text": "Update Dates From Dir", "command": self.update_selected_vna_dates_from_source_dir})
+        right_button_specs.append({"text": "Reorder Scans By Date", "command": self.reorder_vna_scans_by_date})
         right_button_specs.append({"text": "Pair df/f vs Time", "command": self.open_resonator_neighbor_dfrel_window})
         right_button_specs.append({"text": "Pair Self Corr. vs Time", "command": self.open_resonator_neighbor_corr_window})
         right_button_specs.append({"text": "Shift Correl. Between Freqs.", "command": self.open_resonator_shift_correlation_window})
@@ -625,9 +634,14 @@ class DataAnalysisGUI(
         listbox = tk.Listbox(dialog, width=130, height=12, selectmode=tk.SINGLE)
         listbox.pack(fill="both", expand=True, padx=10)
         for idx, scan in enumerate(scans):
-            group_text = f" | group {scan.plot_group}" if scan.plot_group is not None else ""
-            timestamp = f" | {scan.file_timestamp}" if str(scan.file_timestamp).strip() else ""
-            listbox.insert(idx, f"{Path(scan.filename).name}{group_text}{timestamp}")
+            listbox.insert(
+                idx,
+                self._scan_dialog_label(
+                    scan,
+                    include_file_timestamp=True,
+                    include_group=True,
+                ),
+            )
         listbox.selection_set(0)
         listbox.focus_set()
 
@@ -1456,6 +1470,282 @@ class DataAnalysisGUI(
         dialog.wait_window()
         return selected_indices["value"]
 
+    def _confirm_bulk_text_changes(self, title: str, prompt: str, lines: List[str]) -> bool:
+        if not lines:
+            return False
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.geometry("860x460")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text=prompt, anchor="w", justify="left", wraplength=820).pack(
+            fill="x", padx=10, pady=(10, 4)
+        )
+        listbox = tk.Listbox(dialog, width=125, height=18)
+        listbox.pack(fill="both", expand=True, padx=10, pady=4)
+        for line in lines:
+            listbox.insert(tk.END, line)
+
+        decision: Dict[str, bool] = {"approve": False}
+
+        def approve() -> None:
+            decision["approve"] = True
+            dialog.destroy()
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        btns = tk.Frame(dialog)
+        btns.pack(fill="x", padx=10, pady=(4, 10))
+        tk.Button(btns, text="Apply All", command=approve).pack(side="right")
+        tk.Button(btns, text="Cancel", command=cancel).pack(side="right", padx=(0, 8))
+
+        dialog.wait_window()
+        return bool(decision["approve"])
+
+    @staticmethod
+    def _scan_dialog_path_text(scan: VNAScan) -> str:
+        source_dir = str(getattr(scan, "source_dir", "") or "").strip()
+        try:
+            path = Path(source_dir) if source_dir else Path(str(scan.filename)).resolve().parent
+        except Exception:
+            path = Path(source_dir) if source_dir else Path(str(scan.filename)).parent
+        parts = [part for part in path.parts if part not in (path.anchor, "")]
+        if not parts:
+            return str(path)
+        return str(Path(*parts[-2:])) if len(parts) >= 2 else parts[-1]
+
+    def _scan_dialog_label(
+        self,
+        scan: VNAScan,
+        *,
+        index: Optional[int] = None,
+        include_file_timestamp: bool = False,
+        include_loaded_at: bool = False,
+        include_group: bool = False,
+    ) -> str:
+        prefix = f"{int(index):03d} | " if index is not None else ""
+        parts = [prefix + Path(str(scan.filename)).name, f"folder {self._scan_dialog_path_text(scan)}"]
+        if include_file_timestamp:
+            file_timestamp = str(getattr(scan, "file_timestamp", "")).strip() or "unknown"
+            parts.append(f"file {file_timestamp}")
+        if include_loaded_at:
+            parts.append(f"loaded {scan.loaded_at}")
+        if include_group:
+            parts.append(f"group {int(scan.plot_group)}" if scan.plot_group is not None else "no group")
+        return " | ".join(parts)
+
+    @staticmethod
+    def _scan_file_two_level_context(scan: VNAScan) -> str:
+        try:
+            path = Path(str(scan.filename)).resolve()
+        except Exception:
+            path = Path(str(scan.filename))
+        parts = [part for part in path.parts if part not in (path.anchor, "")]
+        if not parts:
+            return str(path)
+        if len(parts) >= 3:
+            return str(Path(*parts[-3:]))
+        return str(Path(*parts))
+
+    @staticmethod
+    def _scan_sort_stamp(scan: VNAScan) -> str:
+        file_stamp = str(getattr(scan, "file_timestamp", "") or "").strip()
+        if file_stamp:
+            return file_stamp
+        return str(getattr(scan, "loaded_at", "") or "").strip()
+
+    @staticmethod
+    def _scan_sort_date_label(scan: VNAScan) -> str:
+        stamp = DataAnalysisGUI._scan_sort_stamp(scan)
+        if not stamp:
+            return "unknown date"
+        return stamp.split("T", 1)[0]
+
+    @staticmethod
+    def _scan_sort_key(scan: VNAScan) -> tuple[int, object, str]:
+        stamp = DataAnalysisGUI._scan_sort_stamp(scan)
+        if scan.plot_group is None:
+            group_key = (1, 0)
+        else:
+            group_key = (0, int(scan.plot_group))
+        name_key = Path(str(scan.filename)).name.lower()
+        if stamp:
+            try:
+                return (0, datetime.fromisoformat(stamp), group_key, name_key)
+            except Exception:
+                date_part = stamp.split("T", 1)[0]
+                try:
+                    return (0, datetime.fromisoformat(date_part), group_key, name_key)
+                except Exception:
+                    return (1, stamp.lower(), group_key, name_key)
+        return (2, "", group_key, name_key)
+
+    @staticmethod
+    def _date_from_source_dir_name(source_dir: str) -> Optional[str]:
+        source_text = str(source_dir).strip()
+        if not source_text:
+            return None
+        candidates = [Path(source_text).name, source_text]
+        for text in candidates:
+            for match in re.finditer(r"(?<!\d)(\d{8})(?!\d)", text):
+                token = match.group(1)
+                try:
+                    dt = datetime.strptime(token, "%Y%m%d")
+                except Exception:
+                    continue
+                return dt.date().isoformat()
+            for match in re.finditer(r"(?<!\d)(\d{6})(?=_|\s|$)", text):
+                token = match.group(1)
+                try:
+                    dt = datetime.strptime(token, "%y%m%d")
+                except Exception:
+                    continue
+                return dt.date().isoformat()
+        return None
+
+    @staticmethod
+    def _replace_iso_date_fixed_1pm(new_date_iso: str) -> str:
+        return f"{new_date_iso}T13:00:00"
+
+    def update_selected_vna_dates_from_source_dir(self) -> None:
+        scans = self._selected_scans()
+        if not scans:
+            messagebox.showwarning(
+                "No selection",
+                "No scans selected for analysis.\nUse 'Select Scans for Analysis' first.",
+            )
+            return
+
+        proposed_updates: list[tuple[VNAScan, str, str, str]] = []
+        skipped: list[str] = []
+        for scan in scans:
+            new_date_iso = self._date_from_source_dir_name(getattr(scan, "source_dir", ""))
+            if new_date_iso is None:
+                skipped.append(
+                    f"{self._scan_file_two_level_context(scan)}: no YYYYMMDD or YYMMDD_ / YYMMDD<space> date token found in {scan.source_dir}"
+                )
+                continue
+            old_timestamp = str(getattr(scan, "file_timestamp", "") or "").strip()
+            new_timestamp = self._replace_iso_date_fixed_1pm(new_date_iso)
+            if new_timestamp == old_timestamp:
+                continue
+            proposed_updates.append((scan, old_timestamp, new_timestamp, new_date_iso))
+
+        if not proposed_updates:
+            message = "No selected scans need a date update from source_dir."
+            if skipped:
+                message += "\n\nSkipped:\n" + "\n".join(skipped[:10])
+            messagebox.showwarning("No updates", message)
+            return
+
+        preview_lines = [
+            f"{self._scan_file_two_level_context(scan)}: {old if old else 'unknown'} -> {new}"
+            for scan, old, new, _date_iso in proposed_updates
+        ]
+        if skipped:
+            preview_lines.append("")
+            preview_lines.append("Skipped:")
+            preview_lines.extend(skipped[:10])
+            if len(skipped) > 10:
+                preview_lines.append(f"... and {len(skipped) - 10} more")
+
+        approved = self._confirm_bulk_text_changes(
+            "Update VNA Dates From Source Directory",
+            "The following selected VNA scans will have their file date updated from the filesystem date to a date parsed from source_dir. This updated date will be used in plots.",
+            preview_lines,
+        )
+        if not approved:
+            return
+
+        changed_count = 0
+        for scan, old_timestamp, new_timestamp, new_date_iso in proposed_updates:
+            scan.file_timestamp = new_timestamp
+            scan.processing_history.append(
+                _make_event(
+                    "update_vna_file_timestamp_from_source_dir",
+                    {
+                        "filename": scan.filename,
+                        "source_dir": scan.source_dir,
+                        "old_file_timestamp": old_timestamp,
+                        "new_file_timestamp": new_timestamp,
+                        "parsed_date": new_date_iso,
+                    },
+                )
+            )
+            changed_count += 1
+
+        self.dataset.processing_history.append(
+            _make_event(
+                "update_selected_vna_dates_from_source_dir",
+                {
+                    "selected_count": len(scans),
+                    "updated_count": changed_count,
+                    "skipped_count": len(skipped),
+                },
+            )
+        )
+        self._mark_dirty()
+        self._refresh_status()
+        self._autosave_dataset()
+        self._log(
+            f"Updated {changed_count} selected VNA file timestamp(s) from source_dir date; skipped {len(skipped)}."
+        )
+        messagebox.showinfo(
+            "Dates updated",
+            f"Updated {changed_count} selected scan date(s) from source_dir."
+            + (f"\nSkipped {len(skipped)} scan(s)." if skipped else ""),
+        )
+
+    def reorder_vna_scans_by_date(self) -> None:
+        scans = list(self.dataset.vna_scans)
+        if not scans:
+            messagebox.showwarning("No data", "No VNA scans are loaded in this dataset.")
+            return
+
+        reordered = sorted(scans, key=self._scan_sort_key)
+        if [id(scan) for scan in reordered] == [id(scan) for scan in scans]:
+            messagebox.showinfo("Already ordered", "Scans are already ordered by date.")
+            return
+
+        preview_lines = []
+        for idx, scan in enumerate(reordered):
+            group_text = f"group {int(scan.plot_group)}" if scan.plot_group is not None else "no group"
+            preview_lines.append(
+                f"{idx:03d} | {self._scan_file_two_level_context(scan)} | {group_text} | {self._scan_sort_date_label(scan)}"
+            )
+
+        approved = self._confirm_bulk_text_changes(
+            "Reorder VNA Scans By Date",
+            "The scans below are in the proposed date-sorted order. Approve to reorder dataset scan order.",
+            preview_lines,
+        )
+        if not approved:
+            return
+
+        selected_set = set(self.dataset.selected_scan_keys)
+        self.dataset.vna_scans = reordered
+        self.dataset.selected_scan_keys = [
+            self._scan_key(scan) for scan in self.dataset.vna_scans if self._scan_key(scan) in selected_set
+        ]
+        self.dataset.processing_history.append(
+            _make_event(
+                "reorder_vna_scans_by_date",
+                {
+                    "scan_count": len(self.dataset.vna_scans),
+                },
+            )
+        )
+        self._mark_dirty()
+        self._refresh_status()
+        self._autosave_dataset()
+        self._log(f"Reordered {len(self.dataset.vna_scans)} VNA scan(s) by date.")
+        messagebox.showinfo(
+            "Scans reordered",
+            f"Reordered {len(self.dataset.vna_scans)} scan(s) by date. Dataset saved automatically.",
+        )
+
     def _refresh_status(self) -> None:
         created = self.dataset.created_at if self.dataset.created_at else "Unassigned"
         name = self.dataset.dataset_name if self.dataset.dataset_name else "Unassigned"
@@ -2046,9 +2336,10 @@ class DataAnalysisGUI(
         path_texts = filedialog.askopenfilenames(
             title="Select VNA scan file(s)",
             filetypes=[
-                ("Supported VNA files", "*.npy *.txt *.dat *.csv"),
+                ("Supported VNA files", "*.npy *.txt *.dat *.csv *.s2p"),
                 ("NumPy files", "*.npy"),
                 ("Text files", "*.txt *.dat *.csv"),
+                ("Touchstone S2P files", "*.s2p"),
                 ("All files", "*.*"),
             ],
         )
@@ -2058,24 +2349,46 @@ class DataAnalysisGUI(
         added_count = 0
         failed: List[str] = []
         warnings: List[str] = []
-        for path_text in path_texts:
-            path = Path(path_text)
-            try:
-                scan, warning = _load_vna_file(path)
-                self.dataset.vna_scans.append(scan)
-                self.dataset.selected_scan_keys.append(self._scan_key(scan))
-                self.dataset.processing_history.append(
-                    _make_event(
-                        "add_vna_scan_to_dataset",
-                        {"filename": scan.filename, "loaded_at": scan.loaded_at},
-                    )
+
+        paths = [Path(path_text) for path_text in path_texts]
+
+        def _add_scan(scan: VNAScan) -> None:
+            self.dataset.vna_scans.append(scan)
+            self.dataset.selected_scan_keys.append(self._scan_key(scan))
+            self.dataset.processing_history.append(
+                _make_event(
+                    "add_vna_scan_to_dataset",
+                    {"filename": scan.filename, "loaded_at": scan.loaded_at},
                 )
-                self._mark_dirty()
-                added_count += 1
-                if warning:
-                    warnings.append(warning)
+            )
+
+        pair_handled = False
+        if len(paths) == 2:
+            try:
+                pair_scan, pair_warning = _try_load_vna_npy_pair(paths[0], paths[1])
             except Exception as exc:
-                failed.append(f"{path.name}: {exc}")
+                failed.append(f"{paths[0].name} + {paths[1].name}: {exc}")
+                pair_handled = True
+            else:
+                if pair_scan is not None:
+                    _add_scan(pair_scan)
+                    self._mark_dirty()
+                    added_count += 1
+                    if pair_warning:
+                        warnings.append(pair_warning)
+                    pair_handled = True
+
+        if not pair_handled:
+            for path in paths:
+                try:
+                    scan, warning = _load_vna_file(path)
+                    _add_scan(scan)
+                    self._mark_dirty()
+                    added_count += 1
+                    if warning:
+                        warnings.append(warning)
+                except Exception as exc:
+                    failed.append(f"{path.name}: {exc}")
 
         self._refresh_status()
         self._log(f"VNA load result: added={added_count}, failed={len(failed)}")
@@ -2131,7 +2444,7 @@ class DataAnalysisGUI(
         listbox.pack(fill="both", expand=True, padx=10, pady=4)
 
         for idx, scan in enumerate(self.dataset.vna_scans):
-            label = f"{idx:03d} | {Path(scan.filename).name} | loaded {scan.loaded_at}"
+            label = self._scan_dialog_label(scan, index=idx, include_loaded_at=True)
             listbox.insert(tk.END, label)
 
         def do_remove() -> None:
@@ -2215,14 +2528,15 @@ class DataAnalysisGUI(
         group_entry.pack(side="left", padx=(6, 12))
         tk.Label(group_frame, text="Blank clears group for the chosen subset.").pack(side="left")
 
-        listbox = tk.Listbox(selector, width=160, height=16, selectmode=tk.MULTIPLE)
+        listbox = tk.Listbox(selector, width=160, height=16, selectmode=tk.EXTENDED)
         listbox.pack(fill="both", expand=True, padx=10, pady=4)
         for idx, scan in enumerate(scans):
-            file_timestamp = str(getattr(scan, "file_timestamp", "")).strip() or "unknown"
-            group_text = f"group {int(scan.plot_group)}" if scan.plot_group is not None else "no group"
-            label = (
-                f"{idx:03d} | {Path(scan.filename).name} | "
-                f"file {file_timestamp} | loaded {scan.loaded_at} | {group_text}"
+            label = self._scan_dialog_label(
+                scan,
+                index=idx,
+                include_file_timestamp=True,
+                include_loaded_at=True,
+                include_group=True,
             )
             listbox.insert(tk.END, label)
             listbox.selection_set(idx)
@@ -2317,8 +2631,12 @@ class DataAnalysisGUI(
         listbox = tk.Listbox(selector, width=145, height=18, selectmode=tk.MULTIPLE)
         listbox.pack(fill="both", expand=True, padx=10, pady=4)
         for idx, scan in enumerate(scans):
-            group_text = f"group {int(scan.plot_group)}" if scan.plot_group is not None else "no group"
-            label = f"{idx:03d} | {Path(scan.filename).name} | loaded {scan.loaded_at} | {group_text}"
+            label = self._scan_dialog_label(
+                scan,
+                index=idx,
+                include_loaded_at=True,
+                include_group=True,
+            )
             listbox.insert(tk.END, label)
 
         def do_clear() -> None:
@@ -2796,6 +3114,8 @@ class DataAnalysisGUI(
             arr = arr[np.isfinite(arr)]
             if arr.size == 0:
                 continue
+            mean_value = float(np.mean(arr))
+            std_value = float(np.std(arr))
             q1, median, q3 = np.percentile(arr, [25.0, 50.0, 75.0])
             iqr = float(q3 - q1)
             lower_bound = float(q1 - 1.5 * iqr)
@@ -2807,6 +3127,10 @@ class DataAnalysisGUI(
                 {
                     "elapsed_days": float(elapsed_days),
                     "count": int(arr.size),
+                    "mean": mean_value,
+                    "std": std_value,
+                    "lower": float(mean_value - std_value),
+                    "upper": float(mean_value + std_value),
                     "q1": float(q1),
                     "median": float(median),
                     "q3": float(q3),
@@ -3632,6 +3956,7 @@ class DataAnalysisGUI(
         show_iqr = bool(self.res_neighbor_dfrel_show_iqr_var.get()) if self.res_neighbor_dfrel_show_iqr_var is not None else True
 
         summary = []
+        drift_single_interval_xlim: Optional[tuple[float, float]] = None
         if mode == "drift":
             summary = self._resonator_neighbor_drift_rate_summary(pair_series)
             drift_series = self._resonator_neighbor_drift_rate_series(pair_series)
@@ -3640,32 +3965,70 @@ class DataAnalysisGUI(
                 lower_summary = np.asarray([float(item["lower"]) for item in summary], dtype=float)
                 upper_summary = np.asarray([float(item["upper"]) for item in summary], dtype=float)
                 if show_iqr:
-                    ax.fill_between(
-                        x_summary,
-                        lower_summary,
-                        upper_summary,
-                        color="0.15",
-                        alpha=0.28,
-                        zorder=3.2,
-                        linewidth=0.0,
-                        label="Mean +/- 1 std",
-                    )
-                    ax.plot(
-                        x_summary,
-                        lower_summary,
-                        color="black",
-                        linewidth=0.9,
-                        alpha=0.9,
-                        zorder=3.35,
-                    )
-                    ax.plot(
-                        x_summary,
-                        upper_summary,
-                        color="black",
-                        linewidth=0.9,
-                        alpha=0.9,
-                        zorder=3.35,
-                    )
+                    valid_mask = np.isfinite(x_summary) & np.isfinite(lower_summary) & np.isfinite(upper_summary)
+                    valid_count = int(np.count_nonzero(valid_mask))
+                    if valid_count >= 2:
+                        ax.fill_between(
+                            x_summary[valid_mask],
+                            lower_summary[valid_mask],
+                            upper_summary[valid_mask],
+                            color="0.15",
+                            alpha=0.28,
+                            zorder=3.2,
+                            linewidth=0.0,
+                            label="Mean +/- 1 std",
+                        )
+                        ax.plot(
+                            x_summary[valid_mask],
+                            lower_summary[valid_mask],
+                            color="black",
+                            linewidth=0.9,
+                            alpha=0.9,
+                            zorder=3.35,
+                        )
+                        ax.plot(
+                            x_summary[valid_mask],
+                            upper_summary[valid_mask],
+                            color="black",
+                            linewidth=0.9,
+                            alpha=0.9,
+                            zorder=3.35,
+                        )
+                    elif valid_count == 1:
+                        idx = int(np.flatnonzero(valid_mask)[0])
+                        x0 = float(x_summary[idx])
+                        mean0 = float(summary[idx]["mean"])
+                        lower0 = float(lower_summary[idx])
+                        upper0 = float(upper_summary[idx])
+                        x_left = x0 - 0.5
+                        x_right = x0 + 0.5
+                        ax.fill_between(
+                            np.asarray([x_left, x_right], dtype=float),
+                            np.asarray([lower0, lower0], dtype=float),
+                            np.asarray([upper0, upper0], dtype=float),
+                            color="0.15",
+                            alpha=0.28,
+                            zorder=3.2,
+                            linewidth=0.0,
+                            label="Mean +/- 1 std",
+                        )
+                        ax.plot(
+                            np.asarray([x_left, x_right, x_right, x_left, x_left], dtype=float),
+                            np.asarray([lower0, lower0, upper0, upper0, lower0], dtype=float),
+                            color="black",
+                            linewidth=1.0,
+                            alpha=0.95,
+                            zorder=3.35,
+                        )
+                        ax.plot(
+                            np.asarray([x_left, x_right], dtype=float),
+                            np.asarray([mean0, mean0], dtype=float),
+                            color="black",
+                            linewidth=1.6,
+                            alpha=0.95,
+                            zorder=4.3,
+                        )
+                        drift_single_interval_xlim = (x0 - 5.0, x0 + 5.0)
             for pair in drift_series:
                 color = pair["color"]
                 x = np.asarray([float(pt["elapsed_days"]) for pt in pair["drift_points"]], dtype=float)
@@ -3684,9 +4047,21 @@ class DataAnalysisGUI(
             summary = self._resonator_neighbor_summary_by_time(pair_series)
             if show_iqr and summary:
                 x_summary = np.asarray([float(item["elapsed_days"]) for item in summary], dtype=float)
+                lower = np.asarray([float(item["lower"]) for item in summary], dtype=float)
+                upper = np.asarray([float(item["upper"]) for item in summary], dtype=float)
                 q1 = np.asarray([float(item["q1"]) for item in summary], dtype=float)
                 median = np.asarray([float(item["median"]) for item in summary], dtype=float)
                 q3 = np.asarray([float(item["q3"]) for item in summary], dtype=float)
+                ax.fill_between(
+                    x_summary,
+                    lower,
+                    upper,
+                    color="0.85",
+                    alpha=0.6,
+                    zorder=1.4,
+                    linewidth=0.0,
+                    label="Mean +/- 1 std",
+                )
                 ax.fill_between(
                     x_summary,
                     q1,
@@ -3749,6 +4124,8 @@ class DataAnalysisGUI(
         else:
             ax.set_ylabel("Neighbor Pair Separation df/f")
             ax.set_title("Neighboring Resonator-Pair Relative Separation vs Time")
+        if mode == "drift" and drift_single_interval_xlim is not None:
+            ax.set_xlim(*drift_single_interval_xlim)
 
         if show_iqr and summary:
             ax.legend(loc="best", fontsize=8)
@@ -5723,6 +6100,7 @@ class DataAnalysisGUI(
         title: str = "",
     ) -> int:
         offset_by_scan_key, tick_info = self._attached_resonance_editor_offset_map(rows, spacing)
+        trace_colors = self._attached_resonance_editor_trace_colors()
         resonator_tracks: dict[str, list[tuple[float, float]]] = {}
         resonator_markers: list[dict] = []
         marker_count = 0
@@ -5733,7 +6111,8 @@ class DataAnalysisGUI(
             freq_ghz = np.asarray(row["freq"], dtype=float) / 1.0e9
             amp_display = np.minimum(np.asarray(row["amp"], dtype=float), truncate_threshold)
             y = amp_display + offset
-            ax.plot(freq_ghz, y, linewidth=1.0, color="tab:blue", alpha=0.8, zorder=1)
+            trace_color = trace_colors[int(row.get("scan_index", 0)) % len(trace_colors)]
+            ax.plot(freq_ghz, y, linewidth=1.0, color=trace_color, alpha=0.9, zorder=1)
 
             for resonator in row["resonators"]:
                 target_hz = float(resonator["target_hz"])
@@ -6036,6 +6415,12 @@ class DataAnalysisGUI(
             controls, text="Delete Selected", width=14, command=self._attached_resonance_editor_delete_selected
         ).pack(side="right", padx=(8, 0))
         tk.Button(
+            controls,
+            text="Clear Sel. Scan Markers",
+            width=20,
+            command=self._attached_resonance_editor_clear_selected_scan_markers,
+        ).pack(side="right", padx=(8, 0))
+        tk.Button(
             controls, text="Reset View", width=12, command=self._attached_resonance_editor_reset_view
         ).pack(side="right", padx=(8, 0))
         self.attached_res_edit_save_button = tk.Button(
@@ -6300,6 +6685,23 @@ class DataAnalysisGUI(
                     offset_by_scan_key[str(row["scan_key"])] = offset
         return offset_by_scan_key, tick_info
 
+    @staticmethod
+    def _attached_resonance_editor_trace_colors() -> list[str]:
+        return [
+            "#8c564b",
+            "#9467bd",
+            "#ff7f0e",
+            "#17becf",
+            "#bcbd22",
+            "#7f7f7f",
+            "#e377c2",
+            "#1f77b4",
+            "#d62728",
+            "#2ca02c",
+            "#aec7e8",
+            "#ffbb78",
+        ]
+
     def _render_attached_resonance_editor(self) -> None:
         if self.attached_res_edit_figure is None or self.attached_res_edit_canvas is None:
             return
@@ -6360,13 +6762,15 @@ class DataAnalysisGUI(
         resonator_tracks: dict[str, list[tuple[float, float]]] = {}
         resonator_markers: list[dict] = []
         y_text_offset = 0.18
+        trace_colors = self._attached_resonance_editor_trace_colors()
         for row in rows:
             scan = row["scan"]
             offset = float(offset_by_scan_key[str(row["scan_key"])])
             freq_ghz = np.asarray(row["freq"], dtype=float) / 1.0e9
             amp_display = self._attached_resonance_editor_display_amp(row["amp"])
             y = amp_display + offset
-            ax.plot(freq_ghz, y, linewidth=1.0, color="tab:blue", alpha=0.8, zorder=1)
+            trace_color = trace_colors[int(row.get("scan_index", 0)) % len(trace_colors)]
+            ax.plot(freq_ghz, y, linewidth=1.0, color=trace_color, alpha=0.9, zorder=1)
 
             for resonator in row["resonators"]:
                 target_hz = float(resonator["target_hz"])
@@ -6747,6 +7151,66 @@ class DataAnalysisGUI(
         self._attached_resonance_editor_reset_working_number()
         self._render_attached_resonance_editor()
 
+    def _attached_resonance_editor_clear_selected_scan_markers(self) -> None:
+        scans = self._selected_scans()
+        if not scans:
+            if self.attached_res_edit_status_var is not None:
+                self.attached_res_edit_status_var.set("No selected scans are available.")
+            return
+
+        scans_with_markers = []
+        for scan in scans:
+            payload = scan.candidate_resonators.get("sheet_resonances")
+            assignments = payload.get("assignments") if isinstance(payload, dict) else {}
+            if isinstance(assignments, dict) and assignments:
+                scans_with_markers.append(scan)
+
+        if not scans_with_markers:
+            if self.attached_res_edit_status_var is not None:
+                self.attached_res_edit_status_var.set("Selected scans do not have attached resonator markers.")
+            return
+
+        names = [Path(str(scan.filename)).name for scan in scans_with_markers]
+        ok = messagebox.askyesno(
+            "Clear Resonator Markers",
+            f"Clear attached resonator markers from {len(scans_with_markers)} selected scan(s)?\n\n"
+            + "\n".join(names[:10])
+            + ("\n..." if len(names) > 10 else ""),
+            parent=self.attached_res_edit_window,
+        )
+        if not ok:
+            return
+
+        self._attached_resonance_editor_push_undo_snapshot()
+        cleared = 0
+        for scan in scans_with_markers:
+            scan.candidate_resonators.pop("sheet_resonances", None)
+            scan.processing_history.append(
+                _make_event(
+                    "clear_attached_resonator_markers",
+                    {"scan": scan.filename},
+                )
+            )
+            cleared += 1
+        self.dataset.processing_history.append(
+            _make_event(
+                "clear_attached_resonator_markers_selected_scans",
+                {
+                    "selected_count": len(scans),
+                    "cleared_count": cleared,
+                    "filenames": [scan.filename for scan in scans_with_markers],
+                },
+            )
+        )
+        self._attached_res_edit_selected = None
+        self._attached_res_edit_changed = True
+        self._attached_resonance_editor_reset_working_number()
+        if self.attached_res_edit_status_var is not None:
+            self.attached_res_edit_status_var.set(
+                f"Cleared attached resonator markers from {cleared} selected scan(s)."
+            )
+        self._render_attached_resonance_editor()
+
     def _attached_resonance_editor_on_click(self, event) -> None:
         if self.attached_res_edit_ax is None or event.inaxes != self.attached_res_edit_ax:
             return
@@ -6820,6 +7284,15 @@ class DataAnalysisGUI(
 
     def _attached_resonance_editor_signal_success(self) -> None:
         widget = self.attached_res_edit_window if self.attached_res_edit_window is not None else self.root
+        if winsound is not None:
+            try:
+                winsound.PlaySound(
+                    "SystemDefault",
+                    winsound.SND_ALIAS | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+                )
+                return
+            except Exception:
+                pass
         try:
             widget.bell()
         except Exception:
@@ -6831,7 +7304,10 @@ class DataAnalysisGUI(
         offset_by_scan_key: dict[str, float],
         click_hz: float,
         y_val: float,
-    ) -> Optional[dict]:
+        *,
+        window_hz: float,
+        visible_range_hz: Optional[tuple[float, float]],
+    ) -> Optional[tuple[dict, float]]:
         group_offsets_in_order: list[float] = []
         seen_offsets: set[float] = set()
         for row in rows:
@@ -6849,6 +7325,9 @@ class DataAnalysisGUI(
         if chosen_offset is None:
             return None
 
+        best_row = None
+        best_target_hz = None
+        best_metric = None
         for row in rows:
             offset = float(offset_by_scan_key.get(str(row["scan_key"]), 0.0))
             if abs(offset - chosen_offset) > 1e-12:
@@ -6856,9 +7335,25 @@ class DataAnalysisGUI(
             freq_arr = np.asarray(row["freq"], dtype=float)
             if freq_arr.size == 0:
                 continue
-            if float(freq_arr[0]) <= float(click_hz) <= float(freq_arr[-1]):
-                return row
-        return None
+            if not (float(freq_arr[0]) <= float(click_hz) <= float(freq_arr[-1])):
+                continue
+            target_hz = self._attached_resonance_editor_minimum_near_click(
+                row["freq"],
+                row["amp"],
+                click_hz,
+                window_hz=window_hz,
+                visible_range_hz=visible_range_hz,
+            )
+            if target_hz is None:
+                continue
+            metric = abs(float(target_hz) - float(click_hz))
+            if best_metric is None or metric < best_metric:
+                best_metric = metric
+                best_row = row
+                best_target_hz = float(target_hz)
+        if best_row is None or best_target_hz is None:
+            return None
+        return best_row, best_target_hz
 
     def _show_attached_resonance_minimum_search_diagnostic(
         self,
@@ -6943,18 +7438,21 @@ class DataAnalysisGUI(
             return
         visible_range_hz = self._attached_resonance_editor_visible_range_hz()
         click_hz = x_ghz * 1.0e9
-        best_row = self._attached_resonance_editor_row_for_add_click(
+        target = self._attached_resonance_editor_row_for_add_click(
             rows,
             offset_by_scan_key,
             click_hz,
             y_val,
+            window_hz=self._attached_resonance_editor_search_window_hz(),
+            visible_range_hz=visible_range_hz,
         )
-        if best_row is None:
+        if target is None:
             if self.attached_res_edit_status_var is not None:
                 self.attached_res_edit_status_var.set(
-                    "Click inside a group's 0-1 band at a frequency covered by that group's first plotted scan."
+                    "Click inside a group's 0-1 band at a frequency where a visible local minimum can be found."
                 )
             return
+        best_row, target_hz = target
         if visible_range_hz is not None:
             lo_hz, hi_hz = visible_range_hz
             if not (lo_hz <= click_hz <= hi_hz):
@@ -6963,30 +7461,6 @@ class DataAnalysisGUI(
                 return
         resonator_number = self._attached_resonance_editor_working_number()
         scan = best_row["scan"]
-        target_hz = self._attached_resonance_editor_minimum_near_click(
-            best_row["freq"],
-            best_row["amp"],
-            x_ghz * 1.0e9,
-            window_hz=self._attached_resonance_editor_search_window_hz(),
-            visible_range_hz=visible_range_hz,
-        )
-        if target_hz is None:
-            detail = "Unable to find a visible local minimum within the current x-range."
-            if visible_range_hz is not None:
-                detail = (
-                    f"Unable to find a visible local minimum. Click={x_ghz:.9g} GHz, "
-                    f"visible range={visible_range_hz[0] / 1.0e9:.9g} to {visible_range_hz[1] / 1.0e9:.9g} GHz."
-                )
-            if self.attached_res_edit_status_var is not None:
-                self.attached_res_edit_status_var.set(detail)
-            self._show_attached_resonance_minimum_search_diagnostic(
-                row=best_row,
-                click_hz=x_ghz * 1.0e9,
-                window_hz=self._attached_resonance_editor_search_window_hz(),
-                visible_range_hz=visible_range_hz,
-                detail=detail,
-            )
-            return
         if visible_range_hz is not None:
             lo_hz, hi_hz = visible_range_hz
             if not (lo_hz <= target_hz <= hi_hz):

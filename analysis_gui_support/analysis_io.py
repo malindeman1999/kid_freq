@@ -319,10 +319,126 @@ def _load_vna_text_complex_hz(path: Path) -> VNAScan:
     return scan
 
 
+def _touchstone_sparam_to_complex(value_a: float, value_b: float, data_format: str) -> complex:
+    fmt = str(data_format).strip().upper()
+    if fmt == "RI":
+        return complex(float(value_a), float(value_b))
+    if fmt == "MA":
+        mag = float(value_a)
+        phase_rad = np.radians(float(value_b))
+        return complex(mag * np.cos(phase_rad), mag * np.sin(phase_rad))
+    if fmt == "DB":
+        mag = float(np.power(10.0, float(value_a) / 20.0))
+        phase_rad = np.radians(float(value_b))
+        return complex(mag * np.cos(phase_rad), mag * np.sin(phase_rad))
+    raise ValueError(f"Unsupported Touchstone data format: {data_format}")
+
+
+def _load_vna_touchstone_s2p(path: Path) -> VNAScan:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception as exc:
+        raise ValueError(f"Could not read Touchstone file: {exc}") from exc
+
+    freq_unit = "HZ"
+    data_format = "MA"
+    option_line = None
+    numeric_tokens: list[float] = []
+    for raw_line in lines:
+        line = str(raw_line).strip()
+        if not line:
+            continue
+        if line.startswith("!"):
+            continue
+        if line.startswith("#"):
+            option_line = line
+            opts = [tok.strip().upper() for tok in line[1:].split() if tok.strip()]
+            if opts:
+                for tok in opts:
+                    if tok in {"HZ", "KHZ", "MHZ", "GHZ"}:
+                        freq_unit = tok
+                        break
+                for tok in opts:
+                    if tok in {"RI", "MA", "DB"}:
+                        data_format = tok
+                        break
+            continue
+        if "!" in line:
+            line = line.split("!", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            numeric_tokens.extend(float(tok) for tok in line.split())
+        except Exception as exc:
+            raise ValueError(f"Could not parse numeric Touchstone data line: {raw_line}") from exc
+
+    if not numeric_tokens:
+        raise ValueError("Touchstone file contained no numeric data.")
+
+    # S2P row width: frequency + 4 S-parameters * 2 values each = 9 numbers per point.
+    if len(numeric_tokens) % 9 != 0:
+        raise ValueError(
+            f"Touchstone numeric token count {len(numeric_tokens)} is not divisible by 9 for S2P data."
+        )
+    arr = np.asarray(numeric_tokens, dtype=float).reshape(-1, 9)
+    if arr.shape[0] < 3:
+        raise ValueError("VNA data must contain at least 3 points.")
+
+    freq = np.asarray(arr[:, 0], dtype=float)
+    scale_by_unit = {
+        "HZ": 1.0,
+        "KHZ": 1.0e3,
+        "MHZ": 1.0e6,
+        "GHZ": 1.0e9,
+    }
+    if freq_unit not in scale_by_unit:
+        raise ValueError(f"Unsupported Touchstone frequency unit: {freq_unit}")
+    freq_hz = freq * float(scale_by_unit[freq_unit])
+
+    # Touchstone 1.0 default order: S11, S21, S12, S22.
+    s21_a = np.asarray(arr[:, 3], dtype=float)
+    s21_b = np.asarray(arr[:, 4], dtype=float)
+    s21_complex = np.asarray(
+        [_touchstone_sparam_to_complex(a, b, data_format) for a, b in zip(s21_a, s21_b)],
+        dtype=np.complex128,
+    )
+
+    loaded_at = datetime.now().isoformat(timespec="seconds")
+    file_timestamp = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+    scan = VNAScan(
+        filename=str(path.resolve()),
+        source_dir=str(path.resolve().parent),
+        loaded_at=loaded_at,
+        file_timestamp=file_timestamp,
+        freq=freq_hz,
+        s21_complex_raw=s21_complex,
+        s21_phase_deg_unwrapped=None,
+    )
+    scan.processing_history.append(
+        _make_event(
+            "load_vna_touchstone_s2p",
+            {
+                "filename": scan.filename,
+                "source_dir": scan.source_dir,
+                "points": int(freq_hz.size),
+                "frequency_units_in": freq_unit,
+                "frequency_units_stored": "Hz",
+                "data_format_in": data_format,
+                "option_line": option_line or "",
+                "stored_param": "S21",
+                "file_timestamp": scan.file_timestamp,
+            },
+        )
+    )
+    return scan
+
+
 def _load_vna_file(path: Path) -> tuple[VNAScan, str | None]:
     suffix = path.suffix.lower()
     if suffix == ".npy":
         return _load_vna_npy(path), None
+    if suffix == ".s2p":
+        return _load_vna_touchstone_s2p(path), None
     if suffix in {".txt", ".dat", ".csv"}:
         try:
             scan = _load_vna_text_complex_hz(path)
@@ -338,3 +454,67 @@ def _load_vna_file(path: Path) -> tuple[VNAScan, str | None]:
         )
         return _load_vna_text_db_phase0(path), warning
     raise ValueError(f"Unsupported VNA file type: {path.suffix or '<no extension>'}")
+
+
+def _try_load_vna_npy_pair(path_a: Path, path_b: Path) -> tuple[VNAScan | None, str | None]:
+    """Attempt loading two .npy files as one scan: 1D real freq + 1D complex S21."""
+    if path_a.suffix.lower() != ".npy" or path_b.suffix.lower() != ".npy":
+        return None, None
+
+    arr_a = np.asarray(np.load(path_a))
+    arr_b = np.asarray(np.load(path_b))
+    if arr_a.ndim != 1 or arr_b.ndim != 1:
+        return None, None
+
+    a_is_complex = bool(np.iscomplexobj(arr_a))
+    b_is_complex = bool(np.iscomplexobj(arr_b))
+    if a_is_complex == b_is_complex:
+        return None, None
+
+    if a_is_complex:
+        s21_path, s21_arr = path_a, arr_a
+        freq_path, freq_arr = path_b, arr_b
+    else:
+        s21_path, s21_arr = path_b, arr_b
+        freq_path, freq_arr = path_a, arr_a
+
+    if not np.issubdtype(freq_arr.dtype, np.number):
+        raise ValueError(f"{freq_path.name} is not numeric 1D frequency data.")
+
+    freq = np.asarray(np.real(freq_arr), dtype=float)
+    s21_complex = np.asarray(s21_arr, dtype=np.complex128)
+    if freq.size != s21_complex.size:
+        raise ValueError(
+            "Frequency and complex S21 arrays must have the same length: "
+            f"{freq_path.name} has {freq.size}, {s21_path.name} has {s21_complex.size}."
+        )
+    if freq.size < 3:
+        raise ValueError("VNA data must contain at least 3 points.")
+
+    loaded_at = datetime.now().isoformat(timespec="seconds")
+    file_timestamp = datetime.fromtimestamp(s21_path.stat().st_mtime).isoformat(timespec="seconds")
+    source_dir = s21_path.resolve().parent
+    scan = VNAScan(
+        filename=str(s21_path.resolve()),
+        source_dir=str(source_dir),
+        loaded_at=loaded_at,
+        file_timestamp=file_timestamp,
+        freq=freq,
+        s21_complex_raw=s21_complex,
+        s21_phase_deg_unwrapped=None,
+    )
+    scan.processing_history.append(
+        _make_event(
+            "load_vna_npy_pair_1d_freq_complex",
+            {
+                "filename": scan.filename,
+                "source_dir": scan.source_dir,
+                "frequency_file": str(freq_path.resolve()),
+                "s21_complex_file": str(s21_path.resolve()),
+                "frequency_shape": list(freq_arr.shape),
+                "s21_complex_shape": list(s21_arr.shape),
+                "file_timestamp": scan.file_timestamp,
+            },
+        )
+    )
+    return scan, None

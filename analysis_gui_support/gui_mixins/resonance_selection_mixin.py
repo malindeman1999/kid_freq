@@ -668,7 +668,12 @@ class ResonanceSelectionMixin:
         default_index = 0
         for i, scan in enumerate(scans):
             key = self._scan_key(scan)
-            options.append(f"{i+1}. {Path(scan.filename).name} | loaded {scan.loaded_at}")
+            options.append(
+                self._scan_dialog_label(
+                    scan,
+                    include_loaded_at=True,
+                )
+            )
             if key == self._last_resonance_scan_key:
                 default_index = i
         pick = self._select_setting_option(

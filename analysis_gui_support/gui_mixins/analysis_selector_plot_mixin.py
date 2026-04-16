@@ -44,7 +44,7 @@ class AnalysisSelectorPlotMixin:
             anchor="w", padx=10, pady=(10, 4)
         )
 
-        listbox = tk.Listbox(selector, width=120, height=14, selectmode=tk.MULTIPLE)
+        listbox = tk.Listbox(selector, width=120, height=14, selectmode=tk.EXTENDED)
         listbox.pack(fill="both", expand=True, padx=10, pady=4)
 
         key_to_index: dict[str, int] = {}
@@ -52,11 +52,12 @@ class AnalysisSelectorPlotMixin:
         selected_keys = set(self.dataset.selected_scan_keys)
         for idx, scan in enumerate(self.dataset.vna_scans):
             scan_key = self._scan_key(scan)
-            file_timestamp = str(getattr(scan, "file_timestamp", "")).strip() or "unknown"
-            group_text = f" | group {int(scan.plot_group)}" if scan.plot_group is not None else ""
-            label = (
-                f"{idx:03d} | {Path(scan.filename).name} | "
-                f"file {file_timestamp} | loaded {scan.loaded_at}{group_text}"
+            label = self._scan_dialog_label(
+                scan,
+                index=idx,
+                include_file_timestamp=True,
+                include_loaded_at=True,
+                include_group=True,
             )
             listbox.insert(tk.END, label)
             key_to_index[scan_key] = idx
@@ -71,8 +72,17 @@ class AnalysisSelectorPlotMixin:
         preset_combo = ttk.Combobox(preset_frame, textvariable=preset_var, state="readonly", width=32)
         preset_combo.pack(side="left", padx=(8, 8))
 
+        group_presets = {
+            f"Group {int(group_num)}": [
+                self._scan_key(scan) for scan in self.dataset.vna_scans if scan.plot_group == int(group_num)
+            ]
+            for group_num in sorted(
+                {int(scan.plot_group) for scan in self.dataset.vna_scans if scan.plot_group is not None}
+            )
+        }
+
         def _refresh_preset_choices(*, preferred: str = "") -> None:
-            names = sorted(self._saved_scan_selections())
+            names = sorted(set(self._saved_scan_selections()) | set(group_presets))
             preset_combo.configure(values=names)
             if preferred and preferred in names:
                 preset_var.set(preferred)
@@ -89,6 +99,8 @@ class AnalysisSelectorPlotMixin:
             preset_name = str(preset_var.get()).strip()
             saved = self._saved_scan_selections()
             scan_keys = saved.get(preset_name)
+            if scan_keys is None:
+                scan_keys = group_presets.get(preset_name)
             if not preset_name or scan_keys is None:
                 messagebox.showwarning("No saved selection", "Choose a saved selection first.", parent=selector)
                 return
@@ -644,22 +656,34 @@ class AnalysisSelectorPlotMixin:
             )
 
     def _plot_scans_panel_groups(self, scans) -> list[tuple[str, list]]:
+        def _scan_date_label(scan) -> str:
+            stamp = str(getattr(scan, "file_timestamp", "") or "").strip()
+            if not stamp:
+                stamp = str(getattr(scan, "loaded_at", "") or "").strip()
+            if not stamp:
+                return "unknown date"
+            return stamp.split("T", 1)[0]
+
+        def _panel_title(base_label: str, panel_scans: list) -> str:
+            first_date = _scan_date_label(panel_scans[0]) if panel_scans else "unknown date"
+            return f"{base_label} | {first_date}"
+
         use_groups = self.plot_scans_group_var is not None and bool(self.plot_scans_group_var.get())
         if not use_groups:
-            return [(Path(scan.filename).name, [scan]) for scan in scans]
+            return [(_panel_title(Path(scan.filename).name, [scan]), [scan]) for scan in scans]
 
         panels: list[tuple[str, list]] = []
         seen_groups: set[int] = set()
         for scan in scans:
             group = scan.plot_group
             if group is None:
-                panels.append((Path(scan.filename).name, [scan]))
+                panels.append((_panel_title(Path(scan.filename).name, [scan]), [scan]))
                 continue
             if int(group) in seen_groups:
                 continue
             grouped_scans = [s for s in scans if s.plot_group == group]
             seen_groups.add(int(group))
-            panels.append((f"Group {int(group)}", grouped_scans))
+            panels.append((_panel_title(f"Group {int(group)}", grouped_scans), grouped_scans))
         return panels
 
     def _plot_scans_reset_view(self) -> None:
