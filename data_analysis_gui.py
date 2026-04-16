@@ -33,6 +33,7 @@ from analysis_gui_support.analysis_io import (
     _dataset_pickle_path,
     _load_dataset,
     _load_vna_file,
+    _load_vna_npy_mhz_db_deg,
     _try_load_vna_npy_pair,
     _read_app_state,
     _safe_name,
@@ -98,6 +99,7 @@ class DataAnalysisGUI(
         self.scan_count_var = tk.StringVar()
         self.selection_var = tk.StringVar()
         self.saved_var = tk.StringVar()
+        self.update_dates_mode_var = tk.StringVar(value="dir")
         self.synth_button: Optional[tk.Button] = None
         self.select_scans_button: Optional[tk.Button] = None
         self.unwrap_button: Optional[tk.Button] = None
@@ -587,7 +589,7 @@ class DataAnalysisGUI(
             }
         )
         right_button_specs.append({"text": "Plot Resonator Markers", "command": self.open_attached_resonance_plotter})
-        right_button_specs.append({"text": "Update Dates From Dir", "command": self.update_selected_vna_dates_from_source_dir})
+        right_button_specs.append({"text": "Update Dates From Path", "command": self.open_update_dates_dialog})
         right_button_specs.append({"text": "Reorder Scans By Date", "command": self.reorder_vna_scans_by_date})
         right_button_specs.append({"text": "Pair df/f vs Time", "command": self.open_resonator_neighbor_dfrel_window})
         right_button_specs.append({"text": "Pair Self Corr. vs Time", "command": self.open_resonator_neighbor_corr_window})
@@ -1606,10 +1608,24 @@ class DataAnalysisGUI(
         return None
 
     @staticmethod
+    def _date_from_filename_8digit(filename: str) -> Optional[str]:
+        name_text = Path(str(filename)).name.strip()
+        if not name_text:
+            return None
+        for match in re.finditer(r"(?<!\d)(\d{8})(?!\d)", name_text):
+            token = match.group(1)
+            try:
+                dt = datetime.strptime(token, "%Y%m%d")
+            except Exception:
+                continue
+            return dt.date().isoformat()
+        return None
+
+    @staticmethod
     def _replace_iso_date_fixed_1pm(new_date_iso: str) -> str:
         return f"{new_date_iso}T13:00:00"
 
-    def update_selected_vna_dates_from_source_dir(self) -> None:
+    def _update_selected_vna_dates(self, mode: str) -> None:
         scans = self._selected_scans()
         if not scans:
             messagebox.showwarning(
@@ -1618,14 +1634,45 @@ class DataAnalysisGUI(
             )
             return
 
+        if mode == "filename":
+            parse_date = lambda scan: self._date_from_filename_8digit(getattr(scan, "filename", ""))
+            skip_text = (
+                lambda scan: f"{self._scan_file_two_level_context(scan)}: "
+                f"no YYYYMMDD date token found in filename {Path(str(getattr(scan, 'filename', ''))).name}"
+            )
+            confirm_title = "Update VNA Dates From Filename"
+            confirm_message = (
+                "The following selected VNA scans will have their file date updated to a date parsed from the filename "
+                "(first YYYYMMDD token). This updated date will be used in plots."
+            )
+            no_updates_message = "No selected scans need a date update from filename."
+            per_scan_event = "update_vna_file_timestamp_from_filename"
+            dataset_event = "update_selected_vna_dates_from_filename"
+            log_mode_text = "filename date"
+            info_mode_text = "filename"
+        else:
+            parse_date = lambda scan: self._date_from_source_dir_name(getattr(scan, "source_dir", ""))
+            skip_text = (
+                lambda scan: f"{self._scan_file_two_level_context(scan)}: "
+                f"no YYYYMMDD or YYMMDD_ / YYMMDD<space> date token found in {scan.source_dir}"
+            )
+            confirm_title = "Update VNA Dates From Source Directory"
+            confirm_message = (
+                "The following selected VNA scans will have their file date updated from the filesystem date to a date "
+                "parsed from source_dir. This updated date will be used in plots."
+            )
+            no_updates_message = "No selected scans need a date update from source_dir."
+            per_scan_event = "update_vna_file_timestamp_from_source_dir"
+            dataset_event = "update_selected_vna_dates_from_source_dir"
+            log_mode_text = "source_dir date"
+            info_mode_text = "source_dir"
+
         proposed_updates: list[tuple[VNAScan, str, str, str]] = []
         skipped: list[str] = []
         for scan in scans:
-            new_date_iso = self._date_from_source_dir_name(getattr(scan, "source_dir", ""))
+            new_date_iso = parse_date(scan)
             if new_date_iso is None:
-                skipped.append(
-                    f"{self._scan_file_two_level_context(scan)}: no YYYYMMDD or YYMMDD_ / YYMMDD<space> date token found in {scan.source_dir}"
-                )
+                skipped.append(skip_text(scan))
                 continue
             old_timestamp = str(getattr(scan, "file_timestamp", "") or "").strip()
             new_timestamp = self._replace_iso_date_fixed_1pm(new_date_iso)
@@ -1634,7 +1681,7 @@ class DataAnalysisGUI(
             proposed_updates.append((scan, old_timestamp, new_timestamp, new_date_iso))
 
         if not proposed_updates:
-            message = "No selected scans need a date update from source_dir."
+            message = no_updates_message
             if skipped:
                 message += "\n\nSkipped:\n" + "\n".join(skipped[:10])
             messagebox.showwarning("No updates", message)
@@ -1652,8 +1699,8 @@ class DataAnalysisGUI(
                 preview_lines.append(f"... and {len(skipped) - 10} more")
 
         approved = self._confirm_bulk_text_changes(
-            "Update VNA Dates From Source Directory",
-            "The following selected VNA scans will have their file date updated from the filesystem date to a date parsed from source_dir. This updated date will be used in plots.",
+            confirm_title,
+            confirm_message,
             preview_lines,
         )
         if not approved:
@@ -1664,7 +1711,7 @@ class DataAnalysisGUI(
             scan.file_timestamp = new_timestamp
             scan.processing_history.append(
                 _make_event(
-                    "update_vna_file_timestamp_from_source_dir",
+                    per_scan_event,
                     {
                         "filename": scan.filename,
                         "source_dir": scan.source_dir,
@@ -1678,7 +1725,7 @@ class DataAnalysisGUI(
 
         self.dataset.processing_history.append(
             _make_event(
-                "update_selected_vna_dates_from_source_dir",
+                dataset_event,
                 {
                     "selected_count": len(scans),
                     "updated_count": changed_count,
@@ -1690,13 +1737,68 @@ class DataAnalysisGUI(
         self._refresh_status()
         self._autosave_dataset()
         self._log(
-            f"Updated {changed_count} selected VNA file timestamp(s) from source_dir date; skipped {len(skipped)}."
+            f"Updated {changed_count} selected VNA file timestamp(s) from {log_mode_text}; skipped {len(skipped)}."
         )
         messagebox.showinfo(
             "Dates updated",
-            f"Updated {changed_count} selected scan date(s) from source_dir."
+            f"Updated {changed_count} selected scan date(s) from {info_mode_text}."
             + (f"\nSkipped {len(skipped)} scan(s)." if skipped else ""),
         )
+
+    def update_selected_vna_dates_from_source_dir(self) -> None:
+        self._update_selected_vna_dates(mode="dir")
+
+    def update_selected_vna_dates_from_path(self) -> None:
+        mode = str(self.update_dates_mode_var.get() or "dir").strip().lower()
+        if mode not in {"dir", "filename"}:
+            mode = "dir"
+        self._update_selected_vna_dates(mode=mode)
+
+    def open_update_dates_dialog(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Update Dates From Path")
+        dialog.geometry("420x190")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(
+            dialog,
+            text="Choose where to parse scan dates from:",
+            anchor="w",
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 8))
+
+        mode_var = tk.StringVar(value=str(self.update_dates_mode_var.get() or "dir"))
+        tk.Radiobutton(
+            dialog,
+            text="Directory (default behavior)",
+            value="dir",
+            variable=mode_var,
+            anchor="w",
+            justify="left",
+        ).pack(anchor="w", padx=18, pady=(0, 4))
+        tk.Radiobutton(
+            dialog,
+            text="Filename (first YYYYMMDD token)",
+            value="filename",
+            variable=mode_var,
+            anchor="w",
+            justify="left",
+        ).pack(anchor="w", padx=18, pady=(0, 8))
+
+        button_row = tk.Frame(dialog)
+        button_row.pack(fill="x", padx=12, pady=(4, 12))
+
+        def _run() -> None:
+            chosen = str(mode_var.get() or "dir").strip().lower()
+            if chosen not in {"dir", "filename"}:
+                chosen = "dir"
+            self.update_dates_mode_var.set(chosen)
+            dialog.destroy()
+            self._update_selected_vna_dates(chosen)
+
+        tk.Button(button_row, text="Cancel", width=10, command=dialog.destroy).pack(side="right")
+        tk.Button(button_row, text="Update", width=10, command=_run).pack(side="right", padx=(0, 8))
 
     def reorder_vna_scans_by_date(self) -> None:
         scans = list(self.dataset.vna_scans)
@@ -1830,14 +1932,67 @@ class DataAnalysisGUI(
         self._phase3_attach()
         self._phase3_close()
 
+    def _path_identity_from_stem(self, path: Path) -> tuple[str, str]:
+        match = re.match(r"^(?P<prefix>\d{8}_\d{6})_(?P<name>.+)$", path.stem)
+        if not match:
+            return "", ""
+        return match.group("prefix"), match.group("name")
+
+    def _backfill_dataset_identity_from_path(self) -> None:
+        prefix, name = self._path_identity_from_stem(self.dataset_path.resolve())
+        if not prefix or not name:
+            return
+        if not self.dataset.created_at:
+            try:
+                dt = datetime.strptime(prefix, "%Y%m%d_%H%M%S")
+                self.dataset.created_at = dt.isoformat(timespec="seconds")
+            except Exception:
+                pass
+        if not self.dataset.dataset_name:
+            self.dataset.dataset_name = name
+
+    def _reconcile_dataset_path_for_save(self) -> None:
+        current_path = self.dataset_path.resolve()
+        self._backfill_dataset_identity_from_path()
+        if self.dataset.dataset_name and self.dataset.created_at:
+            target_path = _dataset_pickle_path(self.dataset).resolve()
+        else:
+            target_path = current_path
+
+        if target_path == current_path:
+            self.dataset_path = target_path
+            return
+
+        if target_path.exists():
+            raise FileExistsError(f"Target dataset file already exists:\n{target_path}")
+
+        current_exists = current_path.exists()
+        current_dir = current_path.parent.resolve()
+        target_dir = target_path.parent.resolve()
+
+        if current_exists and current_dir == target_dir:
+            current_path.rename(target_path)
+        elif current_exists and current_dir != target_dir:
+            if current_dir == DATASETS_DIR.resolve():
+                target_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(current_path), str(target_path))
+            else:
+                if target_dir.exists():
+                    raise FileExistsError(f"Target dataset folder already exists:\n{target_dir}")
+                shutil.move(str(current_dir), str(target_dir))
+                moved_path = target_dir / current_path.name
+                if moved_path.exists() and moved_path != target_path:
+                    moved_path.rename(target_path)
+        else:
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+        self.dataset_path = target_path
+
     def _persist_dataset(self) -> bool:
         try:
             if not self.dataset.created_at:
                 self.dataset.created_at = datetime.now().isoformat(timespec="seconds")
-            if self.dataset.dataset_name:
-                self.dataset_path = _dataset_pickle_path(self.dataset).resolve()
-            else:
-                self.dataset_path = self.dataset_path.resolve()
+            self._reconcile_dataset_path_for_save()
 
             self.dataset.processing_history.append(
                 _make_event("save_dataset", {"dataset_path": str(self.dataset_path)})
@@ -1941,6 +2096,7 @@ class DataAnalysisGUI(
         old_history_len = len(self.dataset.processing_history)
         old_dir_exists = old_dataset_dir.exists()
         moved_dir = False
+        legacy_pickle_path: Optional[Path] = None
 
         try:
             self.dataset.dataset_name = cleaned_name
@@ -1953,6 +2109,11 @@ class DataAnalysisGUI(
             if old_dir_exists and old_dataset_dir != new_dataset_dir:
                 shutil.move(str(old_dataset_dir), str(new_dataset_dir))
                 moved_dir = True
+
+            if moved_dir:
+                legacy_pickle_path = (new_dataset_dir / old_dataset_path.name).resolve()
+            else:
+                legacy_pickle_path = old_dataset_path
 
             self.dataset_path = new_dataset_path
             self.dataset.source_file = str(new_dataset_path)
@@ -1968,6 +2129,12 @@ class DataAnalysisGUI(
                 )
             )
             _save_dataset(self.dataset, self.dataset_path)
+            if (
+                legacy_pickle_path is not None
+                and legacy_pickle_path.exists()
+                and legacy_pickle_path != self.dataset_path
+            ):
+                legacy_pickle_path.unlink()
             _write_app_state(self.dataset_path)
             self._mark_clean()
             self._refresh_status()
@@ -2333,6 +2500,10 @@ class DataAnalysisGUI(
             messagebox.showerror("Load failed", str(exc))
 
     def load_vna_scan(self) -> None:
+        mode = self._choose_vna_load_mode()
+        if mode is None:
+            return
+
         path_texts = filedialog.askopenfilenames(
             title="Select VNA scan file(s)",
             filetypes=[
@@ -2362,26 +2533,41 @@ class DataAnalysisGUI(
                 )
             )
 
-        pair_handled = False
-        if len(paths) == 2:
-            try:
-                pair_scan, pair_warning = _try_load_vna_npy_pair(paths[0], paths[1])
-            except Exception as exc:
-                failed.append(f"{paths[0].name} + {paths[1].name}: {exc}")
-                pair_handled = True
-            else:
-                if pair_scan is not None:
-                    _add_scan(pair_scan)
-                    self._mark_dirty()
-                    added_count += 1
-                    if pair_warning:
-                        warnings.append(pair_warning)
+        if mode == "autodetect":
+            pair_handled = False
+            if len(paths) == 2:
+                try:
+                    pair_scan, pair_warning = _try_load_vna_npy_pair(paths[0], paths[1])
+                except Exception as exc:
+                    failed.append(f"{paths[0].name} + {paths[1].name}: {exc}")
                     pair_handled = True
+                else:
+                    if pair_scan is not None:
+                        _add_scan(pair_scan)
+                        self._mark_dirty()
+                        added_count += 1
+                        if pair_warning:
+                            warnings.append(pair_warning)
+                        pair_handled = True
 
-        if not pair_handled:
+            if not pair_handled:
+                for path in paths:
+                    try:
+                        scan, warning = _load_vna_file(path)
+                        _add_scan(scan)
+                        self._mark_dirty()
+                        added_count += 1
+                        if warning:
+                            warnings.append(warning)
+                    except Exception as exc:
+                        failed.append(f"{path.name}: {exc}")
+        else:
             for path in paths:
                 try:
-                    scan, warning = _load_vna_file(path)
+                    if path.suffix.lower() != ".npy":
+                        raise ValueError("Legacy MHz/dB/deg loader supports only .npy files.")
+                    scan = _load_vna_npy_mhz_db_deg(path)
+                    warning = None
                     _add_scan(scan)
                     self._mark_dirty()
                     added_count += 1
@@ -2425,6 +2611,74 @@ class DataAnalysisGUI(
             "VNA scan load failed",
             "No files were loaded.\n\n" + "\n".join(failed[:8]),
         )
+
+    def _choose_vna_load_mode(self) -> Optional[str]:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Load VNA Scan(s)")
+        dialog.geometry("880x300")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        mode_var = tk.StringVar(value="autodetect")
+        tk.Label(
+            dialog,
+            text="Choose a load method before selecting file(s):",
+            anchor="w",
+            justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 8))
+
+        autodetect_text = (
+            "Autodetect (default):\n"
+            "  - .npy: (3,N)/(N,3) [freq, real, imag]\n"
+            "  - .npy: (2,N)/(N,2) [freq, complex]\n"
+            "  - two 1D .npy files: [freq] + [complex]\n"
+            "  - text: 3-col [freq_Hz, real, imag]\n"
+            "  - text: 2-col [freq_MHz, amp_dB] (phase assumed 0)\n"
+            "  - .s2p: S21 (RI/MA/DB), freq units HZ/KHZ/MHZ/GHZ"
+        )
+        legacy_text = (
+            "Legacy explicit .npy format:\n"
+            "  - (3,N)/(N,3) [freq_MHz, amp_dB, phase_deg]\n"
+            "  - use this for files like Be241202p1_hybrid_vna_PE20241213.npy"
+        )
+
+        tk.Radiobutton(
+            dialog,
+            text=autodetect_text,
+            value="autodetect",
+            variable=mode_var,
+            anchor="w",
+            justify="left",
+            wraplength=840,
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+        tk.Radiobutton(
+            dialog,
+            text=legacy_text,
+            value="legacy_mhz_db_deg",
+            variable=mode_var,
+            anchor="w",
+            justify="left",
+            wraplength=840,
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+        selection: dict[str, Optional[str]] = {"mode": None}
+
+        def _choose_and_close() -> None:
+            picked = str(mode_var.get() or "autodetect").strip().lower()
+            if picked not in {"autodetect", "legacy_mhz_db_deg"}:
+                picked = "autodetect"
+            selection["mode"] = picked
+            dialog.destroy()
+
+        button_row = tk.Frame(dialog)
+        button_row.pack(fill="x", padx=12, pady=(8, 12))
+        tk.Button(button_row, text="Cancel", width=12, command=dialog.destroy).pack(side="right")
+        tk.Button(button_row, text="Select File(s)...", width=14, command=_choose_and_close).pack(
+            side="right", padx=(0, 8)
+        )
+
+        self.root.wait_window(dialog)
+        return selection["mode"]
 
     def remove_vna_scans(self) -> None:
         if not self.dataset.vna_scans:

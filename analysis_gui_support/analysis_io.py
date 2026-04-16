@@ -73,7 +73,8 @@ def _normalize_dataset(dataset: Dataset, dataset_path: Path) -> Dataset:
             except Exception:
                 pass
         if not dataset.dataset_name:
-            dataset.dataset_name = match.group("name").replace("_", " ")
+            # Preserve the exact prefix used in the dataset path.
+            dataset.dataset_name = match.group("name")
 
     return dataset
 
@@ -210,6 +211,71 @@ def _load_vna_npy(path: Path) -> VNAScan:
                 "filename": scan.filename,
                 "source_dir": scan.source_dir,
                 "shape": list(arr.shape),
+                "file_timestamp": scan.file_timestamp,
+            },
+        )
+    )
+    return scan
+
+
+def _load_vna_npy_mhz_db_deg(path: Path) -> VNAScan:
+    arr = np.load(path)
+    arr = np.asarray(arr)
+    if arr.ndim != 2:
+        raise ValueError(
+            f"Expected 2D array with [frequency_MHz, amplitude_dB, phase_deg], got shape {arr.shape}"
+        )
+
+    # Explicit loader for legacy/problem format:
+    # - row format:    (3, N) rows = [freq_MHz, amp_dB, phase_deg]
+    # - column format: (N, 3) cols = [freq_MHz, amp_dB, phase_deg]
+    if arr.shape[1] == 3:
+        freq_mhz = arr[:, 0]
+        amp_db = arr[:, 1]
+        phase_deg = arr[:, 2]
+    elif arr.shape[0] == 3:
+        freq_mhz = arr[0, :]
+        amp_db = arr[1, :]
+        phase_deg = arr[2, :]
+    else:
+        raise ValueError(
+            "Expected shape (3, N) rows [frequency_MHz, amplitude_dB, phase_deg] or "
+            f"(N, 3) columns [frequency_MHz, amplitude_dB, phase_deg], got {arr.shape}"
+        )
+
+    freq_hz = np.asarray(freq_mhz, dtype=float) * 1.0e6
+    amp_db = np.asarray(amp_db, dtype=float)
+    phase_deg = np.asarray(phase_deg, dtype=float)
+    if not (freq_hz.size == amp_db.size == phase_deg.size):
+        raise ValueError("Frequency, amplitude, and phase arrays must have the same length.")
+    if freq_hz.size < 3:
+        raise ValueError("VNA data must contain at least 3 points.")
+
+    amp_linear = np.power(10.0, amp_db / 20.0)
+    s21_complex = _complex_from_polar(amp_linear, phase_deg)
+
+    loaded_at = datetime.now().isoformat(timespec="seconds")
+    file_timestamp = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+    scan = VNAScan(
+        filename=str(path.resolve()),
+        source_dir=str(path.resolve().parent),
+        loaded_at=loaded_at,
+        file_timestamp=file_timestamp,
+        freq=freq_hz,
+        s21_complex_raw=s21_complex,
+        s21_phase_deg_unwrapped=None,
+    )
+    scan.processing_history.append(
+        _make_event(
+            "load_vna_npy_mhz_db_deg",
+            {
+                "filename": scan.filename,
+                "source_dir": scan.source_dir,
+                "shape": list(arr.shape),
+                "frequency_units_in": "MHz",
+                "frequency_units_stored": "Hz",
+                "amplitude_units_in": "dB",
+                "phase_units_in": "deg",
                 "file_timestamp": scan.file_timestamp,
             },
         )
