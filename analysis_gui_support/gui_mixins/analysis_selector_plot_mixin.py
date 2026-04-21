@@ -366,7 +366,22 @@ class AnalysisSelectorPlotMixin:
 
         self._plot_scans_missing_normalized_warned = None
         self._plot_scans_update_data_mode_controls()
-        self._plot_scans_render()
+        self._plot_scans_render_when_ready()
+
+    def _plot_scans_render_when_ready(self, *, retries_left: int = 25) -> None:
+        if self.plot_scans_window is None or self.plot_scans_canvas is None:
+            return
+        host = self._scrollable_plot_hosts.get("plot_scans")
+        scroll_canvas = host.get("scroll_canvas") if isinstance(host, dict) else None
+        if isinstance(scroll_canvas, tk.Canvas) and scroll_canvas.winfo_exists():
+            scroll_canvas.update_idletasks()
+            if int(scroll_canvas.winfo_width()) > 10:
+                self._plot_scans_render()
+                return
+        if retries_left <= 0:
+            self._plot_scans_render()
+            return
+        self.plot_scans_window.after(20, lambda: self._plot_scans_render_when_ready(retries_left=retries_left - 1))
 
     def _plot_scans_visible_columns(self) -> list[str]:
         columns: list[str] = []

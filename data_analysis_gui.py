@@ -405,6 +405,7 @@ class DataAnalysisGUI(
             "toolbar_frame": toolbar_frame,
             "scroll_canvas": scroll_canvas,
             "inner_frame": inner_frame,
+            "inner_window": inner_window,
         }
         return toolbar_frame, inner_frame
 
@@ -429,21 +430,35 @@ class DataAnalysisGUI(
     ) -> None:
         if figure is None:
             return
+        host = self._scrollable_plot_hosts.get(key)
+        scroll_canvas = None
+        inner_window = None
+        if host is not None:
+            scroll_canvas = host.get("scroll_canvas")
+            inner_window = host.get("inner_window")
+
         height_in = max(min_height_in, row_count * row_height_in)
+        dpi = float(figure.get_dpi()) if figure.get_dpi() else 100.0
+
+        # Keep figures at least as wide as the visible viewport so toggles and first render
+        # do not temporarily collapse plot width until a manual window resize occurs.
+        if isinstance(scroll_canvas, tk.Canvas) and scroll_canvas.winfo_exists():
+            scroll_canvas.update_idletasks()
+            viewport_px = int(scroll_canvas.winfo_width())
+            if viewport_px > 10 and dpi > 0:
+                width_in = max(width_in, float(viewport_px) / dpi)
+
         figure.set_size_inches(width_in, height_in, forward=True)
         if canvas_agg is not None:
             widget = canvas_agg.get_tk_widget()
-            dpi = float(figure.get_dpi()) if figure.get_dpi() else 100.0
             widget.configure(
                 width=max(1, int(round(width_in * dpi))),
                 height=max(1, int(round(height_in * dpi))),
             )
-        host = self._scrollable_plot_hosts.get(key)
-        if host is None:
-            return
-        scroll_canvas = host.get("scroll_canvas")
         if isinstance(scroll_canvas, tk.Canvas) and scroll_canvas.winfo_exists():
             scroll_canvas.update_idletasks()
+            if isinstance(inner_window, int):
+                scroll_canvas.itemconfigure(inner_window, width=max(1, int(scroll_canvas.winfo_width())))
             scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
 
     def _build_layout(self) -> None:
