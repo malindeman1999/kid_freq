@@ -902,16 +902,6 @@ class AnalysisSelectorPlotMixin:
                 lambda changed_ax: self._plot_scans_autoscale_y_for_visible_x(changed_ax),
             )
 
-        shown = []
-        if "amp" in columns:
-            shown.append("amplitude")
-        if "phase" in columns:
-            shown.append("phase")
-        data_mode_label = "baseline normalized data" if self._plot_scans_data_mode() == "normalized" else "raw VNA data"
-        self.plot_scans_figure.suptitle(
-            f"Selected VNA Scans | {data_mode_label} | showing {', '.join(shown)} | shared frequency range",
-            fontsize=11,
-        )
         self.plot_scans_figure.tight_layout()
         self.plot_scans_canvas.draw_idle()
         if self.plot_scans_status_var is not None:
