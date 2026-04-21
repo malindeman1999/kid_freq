@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -121,6 +120,12 @@ class AttachedResonanceEditorMixin:
             textvariable=self.attached_res_edit_working_number_var,
         )
         self.attached_res_edit_working_number_spinbox.pack(side="left")
+        tk.Button(
+            number_controls,
+            text="Next Unused #",
+            width=13,
+            command=self._attached_resonance_editor_set_next_unused_number,
+        ).pack(side="left", padx=(6, 0))
         self.attached_res_edit_renumber_button = tk.Button(
             controls,
             text="Renumber Low->High",
@@ -869,6 +874,13 @@ class AttachedResonanceEditorMixin:
         if self.attached_res_edit_working_number_var is None:
             return
         self.attached_res_edit_working_number_var.set(self._attached_resonance_editor_next_number())
+
+    def _attached_resonance_editor_set_next_unused_number(self) -> None:
+        next_number = self._attached_resonance_editor_next_number()
+        if self.attached_res_edit_working_number_var is not None:
+            self.attached_res_edit_working_number_var.set(next_number)
+        if self.attached_res_edit_status_var is not None:
+            self.attached_res_edit_status_var.set(f"Working resonator number set to next unused value: {next_number}.")
 
 
     def _attached_resonance_editor_delete_selected(self) -> None:

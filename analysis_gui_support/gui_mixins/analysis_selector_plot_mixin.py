@@ -633,7 +633,7 @@ class AnalysisSelectorPlotMixin:
             y_span = float(np.max(y_all) - np.min(y_all)) if y_all.size else 0.0
             y_text_offset = max(0.01, 0.03 * y_span) if y_span > 0 else 0.02
         for point in all_points:
-            ax.plot(
+            marker_line = ax.plot(
                 [point["x_ghz"]],
                 [point["y"]],
                 linestyle="none",
@@ -643,8 +643,11 @@ class AnalysisSelectorPlotMixin:
                 markeredgecolor="tab:red",
                 markeredgewidth=1.5,
                 zorder=4,
-            )
-            ax.text(
+                clip_on=True,
+            )[0]
+            if hasattr(marker_line, "set_in_layout"):
+                marker_line.set_in_layout(False)
+            marker_text = ax.text(
                 point["x_ghz"],
                 point["y"] - y_text_offset,
                 point["resonator_number"],
@@ -653,7 +656,10 @@ class AnalysisSelectorPlotMixin:
                 fontsize=8,
                 color="tab:red",
                 zorder=5,
+                clip_on=True,
             )
+            if hasattr(marker_text, "set_in_layout"):
+                marker_text.set_in_layout(False)
 
     def _plot_scans_panel_groups(self, scans) -> list[tuple[str, list]]:
         def _scan_date_label(scan) -> str:

@@ -1,25 +1,15 @@
 from __future__ import annotations
 
-import copy
 import queue
-import re
-import shutil
 import threading
 from datetime import datetime
-from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Dict, List, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
 import tkinter as tk
-from openpyxl import Workbook, load_workbook
-from matplotlib import colors as mcolors
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter
-from scipy import stats
-from tkinter import filedialog, messagebox, simpledialog, scrolledtext, ttk
+from tkinter import scrolledtext, ttk
 
 try:
     import winsound
@@ -27,24 +17,11 @@ except Exception:  # pragma: no cover - non-Windows fallback
     winsound = None
 
 from analysis_gui_support.analysis_io import (
-    DATASETS_DIR,
-    DEFAULT_DATASET_FILE,
-    _dataset_dir,
-    _dataset_pickle_path,
     _load_dataset,
-    _load_vna_file,
-    _load_vna_npy_mhz_db_deg,
-    _try_load_vna_npy_pair,
     _read_app_state,
-    _safe_name,
-    _save_dataset,
-    _write_app_state,
 )
 from analysis_gui_support.analysis_models import (
-    Dataset,
     VNAScan,
-    _current_user,
-    _make_event,
     _read_polar_series,
 )
 from analysis_gui_support.gui_mixins.analysis_selector_plot_mixin import AnalysisSelectorPlotMixin

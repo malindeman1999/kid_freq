@@ -255,6 +255,7 @@ class ScanIOMixin:
         autodetect_text = (
             "Autodetect (default):\n"
             "  - .npy: (3,N)/(N,3) [freq, real, imag]\n"
+            "  - .npy: (M,3,N) paged [freq, real, imag] -> flattened to 1 scan\n"
             "  - .npy: (2,N)/(N,2) [freq, complex]\n"
             "  - two 1D .npy files: [freq] + [complex]\n"
             "  - text: 3-col [freq_Hz, real, imag]\n"

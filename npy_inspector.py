@@ -4,10 +4,7 @@ import tkinter as tk
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from matplotlib.figure import Figure
 from tkinter import filedialog, messagebox, ttk
 
 
@@ -32,12 +29,8 @@ class NpyInspector:
         self.slice_controls: Dict[int, tk.IntVar] = {}
         self.slice_selectors: List[ttk.Spinbox] = []
 
-        self.figure: Figure = Figure(figsize=(6.5, 5), dpi=100)
-        self.ax = self.figure.add_subplot(111)
-        self.canvas: Optional[FigureCanvasTkAgg] = None
-
         self._build_ui()
-        self._draw_empty_plot()
+        self._render_empty_output()
 
     def _build_ui(self) -> None:
         toolbar_frame = tk.Frame(self.root, padx=10, pady=10)
@@ -80,19 +73,24 @@ class NpyInspector:
         self.preview_box.pack(fill="both", expand=True)
         self.preview_box.configure(state="disabled")
 
-        plot_frame = tk.Frame(right_panel)
-        plot_frame.pack(fill="both", expand=True)
+        output_frame = tk.LabelFrame(right_panel, text="Array Contents", padx=8, pady=8)
+        output_frame.pack(fill="both", expand=True)
 
-        self.canvas = FigureCanvasTkAgg(self.figure, master=plot_frame)
-        self.canvas.draw()
-        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.output_text = tk.Text(output_frame, wrap="none", font=("Consolas", 10))
+        self.output_text.grid(row=0, column=0, sticky="nsew")
 
-        toolbar = NavigationToolbar2Tk(self.canvas, plot_frame)
-        toolbar.update()
+        y_scroll = ttk.Scrollbar(output_frame, orient="vertical", command=self.output_text.yview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll = ttk.Scrollbar(output_frame, orient="horizontal", command=self.output_text.xview)
+        x_scroll.grid(row=1, column=0, sticky="ew")
+
+        self.output_text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set, state="disabled")
+        output_frame.rowconfigure(0, weight=1)
+        output_frame.columnconfigure(0, weight=1)
 
         bottom_frame = tk.Frame(self.root, padx=10, pady=5)
         bottom_frame.pack(side="bottom", fill="x")
-        tk.Label(bottom_frame, text="Supported: 1D line plots, 2D heatmaps, first slice of 3D+ arrays.").pack(anchor="w")
+        tk.Label(bottom_frame, text="Displays full array contents in a scrollable table view.").pack(anchor="w")
 
     def open_file(self) -> None:
         filename = filedialog.askopenfilename(
@@ -170,7 +168,7 @@ class NpyInspector:
         self._build_slice_controls()
         self._update_info()
         self._update_preview()
-        self._draw_plot()
+        self._render_array_output()
 
     def _clear_ui(self) -> None:
         self.file_var.set("No file loaded")
@@ -182,7 +180,7 @@ class NpyInspector:
         self.preview_box.delete("1.0", "end")
         self.preview_box.insert("end", "Preview unavailable")
         self.preview_box.configure(state="disabled")
-        self._draw_empty_plot()
+        self._render_empty_output()
 
     def _build_slice_controls(self) -> None:
         for widget in self.slice_frame.winfo_children():
@@ -220,11 +218,11 @@ class NpyInspector:
                     to=max(0, shape[axis] - 1),
                     textvariable=axis_var,
                     width=8,
-                    command=self._draw_plot,
+                    command=self._render_array_output,
                 )
                 spin.pack(side="left")
-                spin.bind("<Return>", lambda _e: self._draw_plot())
-                spin.bind("<FocusOut>", lambda _e: self._draw_plot())
+                spin.bind("<Return>", lambda _e: self._render_array_output())
+                spin.bind("<FocusOut>", lambda _e: self._render_array_output())
                 self.slice_selectors.append(spin)
 
     def _update_info(self) -> None:
@@ -280,12 +278,11 @@ class NpyInspector:
             self.preview_box.insert("end", f"Unable to preview array: {exc}")
         self.preview_box.configure(state="disabled")
 
-    def _draw_empty_plot(self) -> None:
-        self.ax.clear()
-        self.ax.text(0.5, 0.5, "Load a .npy or .npz file to display array contents", ha="center", va="center")
-        self.ax.set_xticks([])
-        self.ax.set_yticks([])
-        self.canvas.draw_idle()
+    def _render_empty_output(self) -> None:
+        self.output_text.configure(state="normal")
+        self.output_text.delete("1.0", "end")
+        self.output_text.insert("end", "Load a .npy or .npz file to display array contents")
+        self.output_text.configure(state="disabled")
 
     def _get_slice(self) -> Optional[np.ndarray]:
         if self.data is None:
@@ -301,40 +298,71 @@ class NpyInspector:
         selection[-1] = slice(None)
         return self.data[tuple(selection)]
 
-    def _draw_plot(self) -> None:
-        self.ax.clear()
+    def _format_1d_table(self, arr: np.ndarray) -> str:
+        val_strings = [str(v) for v in arr.tolist()]
+        idx_width = max(5, len(str(len(arr) - 1)))
+        val_width = max(5, max((len(v) for v in val_strings), default=5))
+        lines = [f"{'index':>{idx_width}} | {'value':<{val_width}}", f"{'-' * idx_width}-+-{'-' * val_width}"]
+        for i, v in enumerate(val_strings):
+            lines.append(f"{i:>{idx_width}} | {v:<{val_width}}")
+        return "\n".join(lines)
+
+    def _format_2d_table(self, arr: np.ndarray) -> str:
+        rows, cols = arr.shape
+        str_grid = [[str(arr[r, c]) for c in range(cols)] for r in range(rows)]
+        col_widths = []
+        for c in range(cols):
+            header = f"c{c}"
+            content_width = max((len(str_grid[r][c]) for r in range(rows)), default=0)
+            col_widths.append(max(len(header), content_width, 6))
+
+        row_idx_width = max(4, len(str(rows - 1)))
+        header_cells = [f"{f'c{c}':>{col_widths[c]}}" for c in range(cols)]
+        header = f"{'row':>{row_idx_width}} | " + " | ".join(header_cells)
+        separator = f"{'-' * row_idx_width}-+-" + "-+-".join("-" * w for w in col_widths)
+
+        lines = [header, separator]
+        for r in range(rows):
+            cells = [f"{str_grid[r][c]:>{col_widths[c]}}" for c in range(cols)]
+            lines.append(f"{r:>{row_idx_width}} | " + " | ".join(cells))
+        return "\n".join(lines)
+
+    def _render_array_output(self) -> None:
+        self.output_text.configure(state="normal")
+        self.output_text.delete("1.0", "end")
         if self.data is None:
-            self._draw_empty_plot()
+            self.output_text.insert("end", "No array loaded")
+            self.output_text.configure(state="disabled")
             return
 
         try:
             array = self._get_slice()
             if array is None:
-                raise ValueError("No array to plot")
+                raise ValueError("No array data available")
 
-            if array.ndim != 2 and array.ndim != 1:
-                raise ValueError(f"Unsupported plot shape: {array.shape}")
+            lines = [
+                f"dtype: {array.dtype}",
+                f"shape: {array.shape}",
+                "",
+            ]
+            if self.data.ndim >= 3:
+                indices = []
+                for axis in range(self.data.ndim - 2):
+                    axis_var = self.slice_controls.get(axis)
+                    indices.append(str(min(max(0, axis_var.get()), self.data.shape[axis] - 1)))
+                lines.extend([f"source slice indices (leading axes): ({', '.join(indices)})", ""])
 
             if array.ndim == 1:
-                self.ax.plot(array, marker="o", linestyle="-", markersize=4)
-                self.ax.set_title("1D array")
-                self.ax.set_xlabel("Index")
-                self.ax.set_ylabel("Value")
+                lines.append(self._format_1d_table(array))
+            elif array.ndim == 2:
+                lines.append(self._format_2d_table(array))
             else:
-                im = self.ax.imshow(array, aspect="auto", interpolation="nearest", cmap="viridis")
-                self.figure.colorbar(im, ax=self.ax, fraction=0.046, pad=0.04)
-                self.ax.set_title("2D array slice")
-                self.ax.set_xlabel("Column")
-                self.ax.set_ylabel("Row")
+                lines.append(np.array2string(array, threshold=200, edgeitems=3))
 
-            self.figure.tight_layout()
-            self.canvas.draw_idle()
+            self.output_text.insert("end", "\n".join(lines))
         except Exception as exc:
-            self.ax.clear()
-            self.ax.text(0.5, 0.5, f"Unable to render plot:\n{exc}", ha="center", va="center", wrap=True)
-            self.ax.set_xticks([])
-            self.ax.set_yticks([])
-            self.canvas.draw_idle()
+            self.output_text.insert("end", f"Unable to render array contents:\n{exc}")
+        self.output_text.configure(state="disabled")
 
 
 def main() -> None:

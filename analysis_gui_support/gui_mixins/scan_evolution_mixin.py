@@ -521,23 +521,29 @@ class ScanEvolutionMixin:
                             if lo <= float(pt["x_hz"]) / 1.0e9 <= hi
                         ]
                         if complex_points:
-                            ax_complex.plot(
+                            complex_marker_line = ax_complex.plot(
                                 [float(pt["real"]) for pt in complex_points],
                                 [float(pt["imag"]) for pt in complex_points],
                                 linestyle="none",
                                 marker="s",
                                 markersize=5,
                                 color="black",
-                            )
+                                clip_on=True,
+                            )[0]
+                            if hasattr(complex_marker_line, "set_in_layout"):
+                                complex_marker_line.set_in_layout(False)
                             for pt in complex_points:
-                                ax_complex.annotate(
+                                ann = ax_complex.annotate(
                                     str(pt["label"]),
                                     (float(pt["real"]), float(pt["imag"])),
                                     xytext=(4, 3),
                                     textcoords="offset points",
                                     fontsize=8,
                                     color="black",
+                                    clip_on=True,
                                 )
+                                if hasattr(ann, "set_in_layout"):
+                                    ann.set_in_layout(False)
                 ax_complex.set_aspect("equal", adjustable="box")
                 re_min = float(np.min(real))
                 re_max = float(np.max(real))
@@ -660,7 +666,7 @@ class ScanEvolutionMixin:
                     imag_values=np.asarray(stage["imag"], dtype=float),
                 )
                 if amp_points:
-                    ax_amp.plot(
+                    amp_marker_line = ax_amp.plot(
                         [pt["x_hz"] / 1.0e9 for pt in amp_points],
                         [pt["y"] for pt in amp_points],
                         linestyle="none",
@@ -668,10 +674,13 @@ class ScanEvolutionMixin:
                         markersize=5,
                         color="black",
                         label=("Attached resonators" if "Attached resonators" not in used_res_labels else None),
-                    )
+                        clip_on=True,
+                    )[0]
+                    if hasattr(amp_marker_line, "set_in_layout"):
+                        amp_marker_line.set_in_layout(False)
                     used_res_labels.add("Attached resonators")
                 if phase_points:
-                    ax_phase.plot(
+                    phase_marker_line = ax_phase.plot(
                         [pt["x_hz"] / 1.0e9 for pt in phase_points],
                         [pt["y"] for pt in phase_points],
                         linestyle="none",
@@ -679,7 +688,10 @@ class ScanEvolutionMixin:
                         markersize=5,
                         color="black",
                         label=("Attached resonators" if "Attached resonators" not in used_res_labels else None),
-                    )
+                        clip_on=True,
+                    )[0]
+                    if hasattr(phase_marker_line, "set_in_layout"):
+                        phase_marker_line.set_in_layout(False)
                     used_res_labels.add("Attached resonators")
             ax_amp.grid(True, alpha=0.3)
             ax_phase.grid(True, alpha=0.3)

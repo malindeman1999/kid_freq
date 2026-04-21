@@ -149,9 +149,10 @@ def _save_dataset(dataset: Dataset, dataset_path: Path) -> None:
 def _load_vna_npy(path: Path) -> VNAScan:
     arr = np.load(path)
     arr = np.asarray(arr)
-    if arr.ndim != 2:
+    if arr.ndim not in {2, 3}:
         raise ValueError(
-            f"Expected 2D array with freq/real/imag data, got shape {arr.shape}"
+            "Expected 2D/3D array with freq/real/imag data, "
+            f"got shape {arr.shape}"
         )
 
     # Supported formats:
@@ -159,28 +160,35 @@ def _load_vna_npy(path: Path) -> VNAScan:
     # - column format: (N, 3) cols = [freq, real, imag]
     # - complex row:   (2, N) rows = [freq, complex_s21]
     # - complex col:   (N, 2) cols = [freq, complex_s21]
-    if arr.shape[1] == 3:
+    # - paged rows:    (M, 3, N) pages with rows [freq, real, imag], flattened to one scan
+    if arr.ndim == 2 and arr.shape[1] == 3:
         freq = arr[:, 0]
         s21_real = arr[:, 1]
         s21_imag = arr[:, 2]
-    elif arr.shape[0] == 3:
+    elif arr.ndim == 2 and arr.shape[0] == 3:
         freq = arr[0, :]
         s21_real = arr[1, :]
         s21_imag = arr[2, :]
-    elif arr.shape[1] == 2:
+    elif arr.ndim == 2 and arr.shape[1] == 2:
         freq = np.real(arr[:, 0])
         s21_complex = arr[:, 1]
         s21_real = np.real(s21_complex)
         s21_imag = np.imag(s21_complex)
-    elif arr.shape[0] == 2:
+    elif arr.ndim == 2 and arr.shape[0] == 2:
         freq = np.real(arr[0, :])
         s21_complex = arr[1, :]
         s21_real = np.real(s21_complex)
         s21_imag = np.imag(s21_complex)
+    elif arr.ndim == 3 and arr.shape[1] == 3:
+        # Flatten M pages of length N into one trace of length M*N.
+        freq = np.reshape(np.asarray(arr[:, 0, :], dtype=float), -1)
+        s21_real = np.reshape(np.asarray(arr[:, 1, :], dtype=float), -1)
+        s21_imag = np.reshape(np.asarray(arr[:, 2, :], dtype=float), -1)
     else:
         raise ValueError(
             "Expected shape (3, N) rows [freq, real, imag], (N, 3) columns [freq, real, imag], "
-            "(2, N) rows [freq, complex_s21], or (N, 2) columns [freq, complex_s21], "
+            "(2, N) rows [freq, complex_s21], (N, 2) columns [freq, complex_s21], or "
+            "(M, 3, N) paged rows [freq, real, imag], "
             f"got {arr.shape}"
         )
 
@@ -211,6 +219,8 @@ def _load_vna_npy(path: Path) -> VNAScan:
                 "filename": scan.filename,
                 "source_dir": scan.source_dir,
                 "shape": list(arr.shape),
+                "flattened_paged_input": bool(arr.ndim == 3 and arr.shape[1] == 3),
+                "points_stored": int(freq.size),
                 "file_timestamp": scan.file_timestamp,
             },
         )
