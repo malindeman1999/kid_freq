@@ -128,7 +128,7 @@ class AttachedResonanceEditorMixin:
         ).pack(side="left", padx=(6, 0))
         self.attached_res_edit_renumber_button = tk.Button(
             controls,
-            text="Renumber Low->High",
+            text="Renumber All Low->High",
             width=18,
             command=self._attached_resonance_editor_renumber_low_to_high,
         )
@@ -221,7 +221,7 @@ class AttachedResonanceEditorMixin:
     def _attached_resonance_editor_capture_snapshot(self) -> dict:
         scan_payloads: dict[str, object] = {}
         scan_history_lengths: dict[str, int] = {}
-        for scan in self._selected_scans():
+        for scan in self.dataset.vna_scans:
             key = self._scan_key(scan)
             payload = scan.candidate_resonators.get("sheet_resonances")
             scan_payloads[key] = copy.deepcopy(payload) if isinstance(payload, dict) else None
@@ -767,9 +767,9 @@ class AttachedResonanceEditorMixin:
 
 
     def _attached_resonance_editor_renumber_low_to_high(self) -> None:
-        selected_scans = self._selected_scans()
+        all_scans = list(self.dataset.vna_scans)
         resonator_values: dict[str, list[float]] = {}
-        for scan in selected_scans:
+        for scan in all_scans:
             payload = scan.candidate_resonators.get("sheet_resonances")
             assignments = payload.get("assignments") if isinstance(payload, dict) else {}
             if not isinstance(assignments, dict):
@@ -806,36 +806,61 @@ class AttachedResonanceEditorMixin:
         }
         if all(old_label == new_label for old_label, new_label in renumber_map.items()):
             if self.attached_res_edit_status_var is not None:
-                self.attached_res_edit_status_var.set("Resonator markers are already numbered low to high.")
+                self.attached_res_edit_status_var.set(
+                    "Resonator markers are already numbered low to high across the dataset."
+                )
             return
 
         self._attached_resonance_editor_push_undo_snapshot()
-        for scan in selected_scans:
+        changed_scans = 0
+        for scan in all_scans:
             payload = scan.candidate_resonators.get("sheet_resonances")
             assignments = payload.get("assignments") if isinstance(payload, dict) else {}
             if not isinstance(assignments, dict) or not assignments:
                 continue
             new_assignments: dict[str, dict] = {}
+            scan_changed = False
             for resonator_number, record in assignments.items():
                 if not isinstance(record, dict):
                     continue
-                new_label = renumber_map.get(str(resonator_number).strip())
-                if new_label is None:
-                    continue
+                old_label = str(resonator_number).strip()
+                new_label = renumber_map.get(old_label, old_label)
+                if new_label != old_label:
+                    scan_changed = True
                 new_assignments[new_label] = record
             payload["assignments"] = new_assignments
+            if scan_changed:
+                scan.processing_history.append(
+                    _make_event(
+                        "renumber_attached_resonators_low_to_high",
+                        {
+                            "renumbered_labels": int(len(ordered_labels)),
+                        },
+                    )
+                )
+                changed_scans += 1
+
+        self.dataset.processing_history.append(
+            _make_event(
+                "renumber_attached_resonators_low_to_high_dataset",
+                {
+                    "renumbered_labels": int(len(ordered_labels)),
+                    "changed_scans": int(changed_scans),
+                },
+            )
+        )
 
         if self._attached_res_edit_selected is not None:
             selected_scan_key, selected_number = self._attached_res_edit_selected
-            mapped = renumber_map.get(str(selected_number).strip())
-            self._attached_res_edit_selected = (selected_scan_key, mapped) if mapped is not None else None
+            mapped = renumber_map.get(str(selected_number).strip(), str(selected_number).strip())
+            self._attached_res_edit_selected = (selected_scan_key, mapped)
         self._attached_res_edit_changed = True
         self._attached_resonance_editor_reset_working_number()
         self._attached_resonance_editor_update_save_button()
         self._attached_resonance_editor_update_undo_button()
         if self.attached_res_edit_status_var is not None:
             self.attached_res_edit_status_var.set(
-                f"Renumbered {len(ordered_labels)} resonator marker(s) from low to high mean frequency."
+                f"Renumbered {len(ordered_labels)} resonator marker number(s) from low to high mean frequency across {changed_scans} scan(s)."
             )
         self._render_attached_resonance_editor()
 

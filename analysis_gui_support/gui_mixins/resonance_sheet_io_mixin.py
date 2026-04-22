@@ -29,14 +29,16 @@ class ResonanceSheetIOMixin:
             messagebox.showwarning("Missing file", "Select a valid spreadsheet file first.", parent=self.root)
             return
         try:
-            loaded_count = self._load_resonances_from_sheet(sheet_path)
+            load_result = self._load_resonances_from_sheet(sheet_path)
         except Exception as exc:
             self._log(f"Load resonators from sheet failed: {exc}")
             messagebox.showerror("Load failed", str(exc), parent=self.root)
             return
+        loaded_count = int(load_result.get("loaded", 0))
+        cleared_count = int(load_result.get("cleared", 0))
         messagebox.showinfo(
             "Resonators loaded",
-            f"Loaded {loaded_count} resonator assignment(s) from:\n{sheet_path}",
+            f"Loaded {loaded_count} resonator assignment(s) and cleared {cleared_count} assignment(s) from:\n{sheet_path}",
             parent=self.root,
         )
 
@@ -174,6 +176,32 @@ class ResonanceSheetIOMixin:
         raise ValueError(f"No scan found matching filename {identifier}.")
 
 
+    def _find_scans_for_sheet_identifier(self, identifier: str) -> list[VNAScan]:
+        text = str(identifier).strip()
+        lower = text.lower()
+        scans = list(self.dataset.vna_scans)
+
+        if lower.startswith("group "):
+            try:
+                group_num = int(lower.split()[1])
+            except Exception as exc:
+                raise ValueError(f"Invalid group name: {identifier}") from exc
+            grouped = [scan for scan in scans if scan.plot_group == group_num]
+            if not grouped:
+                raise ValueError(f"No scans found for {identifier}.")
+            return grouped
+
+        matched = []
+        for scan in scans:
+            name = Path(scan.filename).name.lower()
+            stem = Path(scan.filename).stem.lower()
+            if lower == name or lower == stem:
+                matched.append(scan)
+        if not matched:
+            raise ValueError(f"No scan found matching filename {identifier}.")
+        return matched
+
+
     @staticmethod
     def _resonance_plot_window_hz(scan: VNAScan, target_hz: float) -> tuple[float, float]:
         freq = np.sort(np.asarray(scan.freq, dtype=float))
@@ -215,6 +243,13 @@ class ResonanceSheetIOMixin:
         except Exception:
             pass
         return str(value).strip()
+
+
+    @staticmethod
+    def _sheet_cell_is_none(value: object) -> bool:
+        if value is None:
+            return False
+        return str(value).strip().lower() == "none"
 
 
     @staticmethod
@@ -351,7 +386,7 @@ class ResonanceSheetIOMixin:
         return assignment_count
 
 
-    def _load_resonances_from_sheet(self, sheet_path: Path) -> int:
+    def _load_resonances_from_sheet(self, sheet_path: Path) -> dict[str, int]:
         wb = load_workbook(sheet_path, data_only=True, read_only=True)
         try:
             ws = wb.active
@@ -365,6 +400,7 @@ class ResonanceSheetIOMixin:
             row_records: list[dict] = []
             warnings: list[str] = []
             assignment_count = 0
+            cleared_count = 0
             for row_idx, row in enumerate(ws.iter_rows(min_row=3, values_only=True), start=3):
                 if not row:
                     continue
@@ -375,6 +411,26 @@ class ResonanceSheetIOMixin:
                 freq_entries: dict[int, dict] = {}
                 for col_offset, cell in enumerate(row[1:], start=2):
                     resonator_number = column_headers.get(col_offset, "")
+                    if resonator_number and self._sheet_cell_is_none(cell):
+                        try:
+                            target_scans = self._find_scans_for_sheet_identifier(identifier)
+                        except Exception as exc:
+                            warnings.append(f"Row {row_idx}, column {col_offset}: {exc}")
+                            freq_entries[col_offset] = None
+                            continue
+                        key = str(resonator_number).strip()
+                        for scan in target_scans:
+                            payload = scan.candidate_resonators.get("sheet_resonances")
+                            if not isinstance(payload, dict):
+                                continue
+                            assignments = payload.get("assignments")
+                            if not isinstance(assignments, dict):
+                                continue
+                            if key in assignments:
+                                assignments.pop(key, None)
+                                cleared_count += 1
+                        freq_entries[col_offset] = None
+                        continue
                     if cell is None or str(cell).strip() == "":
                         freq_entries[col_offset] = None
                         continue
@@ -434,6 +490,7 @@ class ResonanceSheetIOMixin:
                     "sheet_path": str(sheet_path),
                     "sheet_name": str(ws.title),
                     "assignment_count": int(assignment_count),
+                    "cleared_count": int(cleared_count),
                 },
             )
         )
@@ -441,8 +498,10 @@ class ResonanceSheetIOMixin:
         self._autosave_dataset()
         for warning in warnings[:20]:
             self._log(f"Sheet resonance load warning: {warning}")
-        self._log(f"Loaded {assignment_count} resonator assignment(s) from {sheet_path}")
-        return assignment_count
+        self._log(
+            f"Loaded {assignment_count} resonator assignment(s) and cleared {cleared_count} assignment(s) from {sheet_path}"
+        )
+        return {"loaded": int(assignment_count), "cleared": int(cleared_count)}
 
 
     def _collect_attached_resonance_rows(self) -> tuple[list[dict], dict[int, str], list[int], list[str], str]:

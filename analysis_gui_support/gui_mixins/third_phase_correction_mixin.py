@@ -11,7 +11,7 @@ from tkinter import messagebox
 
 from ..analysis_models import _current_user, _make_event, _read_polar_series
 
-DEFAULT_PHASE3_THRESHOLD_DEG = 100.0
+DEFAULT_PHASE3_THRESHOLD_DEG = 360.0
 
 
 def _find_expected_diff(source_diffs: np.ndarray, i: int, threshold_deg: float) -> tuple[float, bool]:
@@ -78,7 +78,7 @@ class ThirdPhaseCorrectionMixin:
 
         controls = tk.Frame(self.phase3_window, padx=8, pady=8)
         controls.pack(side="top", fill="x")
-        self.phase3_threshold_slider = tk.Scale(controls, from_=1.0, to=300.0, resolution=1.0, orient="horizontal", label="Threshold (deg)", command=lambda _v: self._phase3_on_control_changed(), length=260)
+        self.phase3_threshold_slider = tk.Scale(controls, from_=0.0, to=360.0, resolution=1.0, orient="horizontal", label="Threshold (deg)", command=lambda _v: self._phase3_on_control_changed(), length=260)
         self.phase3_threshold_slider.set(DEFAULT_PHASE3_THRESHOLD_DEG)
         self.phase3_threshold_slider.pack(side="left", padx=(0, 12))
         self.phase3_threshold_slider.bind("<ButtonRelease-1>", self._phase3_on_control_released)

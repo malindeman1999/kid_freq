@@ -180,10 +180,21 @@ def _load_vna_npy(path: Path) -> VNAScan:
         s21_real = np.real(s21_complex)
         s21_imag = np.imag(s21_complex)
     elif arr.ndim == 3 and arr.shape[1] == 3:
-        # Flatten M pages of length N into one trace of length M*N.
-        freq = np.reshape(np.asarray(arr[:, 0, :], dtype=float), -1)
-        s21_real = np.reshape(np.asarray(arr[:, 1, :], dtype=float), -1)
-        s21_imag = np.reshape(np.asarray(arr[:, 2, :], dtype=float), -1)
+        # Sort each page by ascending frequency, then sort pages by mean frequency,
+        # then flatten M pages of length N into one trace of length M*N.
+        page_freq = np.asarray(arr[:, 0, :], dtype=float)
+        page_sort_idx = np.argsort(page_freq, axis=1, kind="mergesort")
+        page_axis = np.arange(arr.shape[0])[:, None]
+        arr_page_sorted = np.asarray(arr, dtype=arr.dtype).copy()
+        arr_page_sorted[:, 0, :] = page_freq[page_axis, page_sort_idx]
+        arr_page_sorted[:, 1, :] = np.asarray(arr[:, 1, :], dtype=float)[page_axis, page_sort_idx]
+        arr_page_sorted[:, 2, :] = np.asarray(arr[:, 2, :], dtype=float)[page_axis, page_sort_idx]
+
+        page_order = np.argsort(np.mean(page_freq, axis=1), kind="mergesort")
+        arr_sorted = np.asarray(arr_page_sorted[page_order, :, :], dtype=arr.dtype)
+        freq = np.reshape(np.asarray(arr_sorted[:, 0, :], dtype=float), -1)
+        s21_real = np.reshape(np.asarray(arr_sorted[:, 1, :], dtype=float), -1)
+        s21_imag = np.reshape(np.asarray(arr_sorted[:, 2, :], dtype=float), -1)
     else:
         raise ValueError(
             "Expected shape (3, N) rows [freq, real, imag], (N, 3) columns [freq, real, imag], "
@@ -220,6 +231,8 @@ def _load_vna_npy(path: Path) -> VNAScan:
                 "source_dir": scan.source_dir,
                 "shape": list(arr.shape),
                 "flattened_paged_input": bool(arr.ndim == 3 and arr.shape[1] == 3),
+                "paged_input_sorted_by_mean_frequency": bool(arr.ndim == 3 and arr.shape[1] == 3),
+                "paged_input_sorted_within_page_by_frequency": bool(arr.ndim == 3 and arr.shape[1] == 3),
                 "points_stored": int(freq.size),
                 "file_timestamp": scan.file_timestamp,
             },
