@@ -301,6 +301,10 @@ class DataAnalysisGUI(
         self.res_neighbor_dfrel_initial_date_var: Optional[tk.StringVar] = None
         self.res_neighbor_dfrel_sep_scale: Optional[tk.Scale] = None
         self._res_neighbor_dfrel_ax = None
+        self.res_neighbor_top_rates_window: Optional[tk.Toplevel] = None
+        self.res_neighbor_top_rates_status_var: Optional[tk.StringVar] = None
+        self.res_neighbor_top_rates_tree: Optional[ttk.Treeview] = None
+        self.res_neighbor_top_rates_text: Optional[tk.Text] = None
         self.res_neighbor_corr_window: Optional[tk.Toplevel] = None
         self.res_neighbor_corr_canvas: Optional[FigureCanvasTkAgg] = None
         self.res_neighbor_corr_toolbar: Optional[NavigationToolbar2Tk] = None

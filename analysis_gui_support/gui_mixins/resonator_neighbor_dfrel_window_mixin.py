@@ -11,7 +11,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 from scipy import stats
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
 from analysis_gui_support.analysis_io import _dataset_dir
 from analysis_gui_support.analysis_models import _make_event
@@ -96,6 +96,10 @@ class ResonatorNeighborDfrelWindowMixin:
             side="left",
             padx=(0, 8),
         )
+        tk.Button(control_row, text="Top 10 Rates", width=12, command=self.open_resonator_neighbor_top_rates_window).pack(
+            side="left",
+            padx=(0, 8),
+        )
         tk.Button(control_row, text="Refresh", width=10, command=self._render_resonator_neighbor_dfrel_window).pack(
             side="left",
             padx=(0, 8),
@@ -138,6 +142,161 @@ class ResonatorNeighborDfrelWindowMixin:
         self.res_neighbor_dfrel_initial_date_var = None
         self.res_neighbor_dfrel_sep_scale = None
         self._res_neighbor_dfrel_ax = None
+        self._close_resonator_neighbor_top_rates_window()
+
+
+
+    def open_resonator_neighbor_top_rates_window(self) -> None:
+        if self.res_neighbor_top_rates_window is not None and self.res_neighbor_top_rates_window.winfo_exists():
+            self.res_neighbor_top_rates_window.lift()
+            self._render_resonator_neighbor_top_rates_window()
+            return
+
+        self.res_neighbor_top_rates_window = tk.Toplevel(self.root)
+        self.res_neighbor_top_rates_window.title("Top 10 Neighbor Pair df/f Drift Rates")
+        self.res_neighbor_top_rates_window.geometry("980x420")
+        self.res_neighbor_top_rates_window.protocol("WM_DELETE_WINDOW", self._close_resonator_neighbor_top_rates_window)
+
+        controls = tk.Frame(self.res_neighbor_top_rates_window, padx=8, pady=8)
+        controls.pack(side="top", fill="x")
+        self.res_neighbor_top_rates_status_var = tk.StringVar(
+            value="Showing highest neighboring pair df/f drift rates by absolute value."
+        )
+        tk.Label(controls, textvariable=self.res_neighbor_top_rates_status_var, anchor="w", justify="left").pack(
+            side="left",
+            fill="x",
+            expand=True,
+        )
+        tk.Button(
+            controls,
+            text="Refresh",
+            width=10,
+            command=self._render_resonator_neighbor_top_rates_window,
+        ).pack(side="right")
+
+        text_frame = tk.Frame(self.res_neighbor_top_rates_window, padx=8, pady=0)
+        text_frame.pack(side="top", fill="both", expand=True, pady=(0, 8))
+        self.res_neighbor_top_rates_text = tk.Text(
+            text_frame,
+            wrap="none",
+            height=12,
+            font=("Consolas", 10),
+        )
+        x_scroll = ttk.Scrollbar(text_frame, orient="horizontal", command=self.res_neighbor_top_rates_text.xview)
+        y_text_scroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.res_neighbor_top_rates_text.yview)
+        self.res_neighbor_top_rates_text.configure(xscrollcommand=x_scroll.set, yscrollcommand=y_text_scroll.set)
+        self.res_neighbor_top_rates_text.pack(side="left", fill="both", expand=True)
+        y_text_scroll.pack(side="right", fill="y")
+        x_scroll.pack(side="bottom", fill="x")
+
+        self._render_resonator_neighbor_top_rates_window()
+
+
+
+    def _close_resonator_neighbor_top_rates_window(self) -> None:
+        if self.res_neighbor_top_rates_window is not None and self.res_neighbor_top_rates_window.winfo_exists():
+            self.res_neighbor_top_rates_window.destroy()
+        self.res_neighbor_top_rates_window = None
+        self.res_neighbor_top_rates_status_var = None
+        self.res_neighbor_top_rates_text = None
+
+
+
+    def _resonator_neighbor_top_drift_rates(self, top_n: int = 10) -> tuple[list[dict], int]:
+        threshold_rel = (
+            float(self.res_neighbor_dfrel_sep_rel_var.get())
+            if self.res_neighbor_dfrel_sep_rel_var is not None
+            else 0.004
+        )
+        initial_date_text = (
+            str(self.res_neighbor_dfrel_initial_date_var.get())
+            if self.res_neighbor_dfrel_initial_date_var is not None
+            else ""
+        )
+        mode = (
+            str(self.res_neighbor_dfrel_mode_var.get())
+            if self.res_neighbor_dfrel_mode_var is not None
+            else "drift"
+        ).strip().lower()
+        overlay_state = self._resonator_neighbor_scan_overlay_state(
+            threshold_rel,
+            initial_date_text=initial_date_text,
+        )
+        pair_series = self._resonator_neighbor_plot_series(overlay_state["data"]["pair_series"], mode)
+        drift_series = self._resonator_neighbor_drift_rate_series(pair_series)
+        rows: list[dict] = []
+        for pair in drift_series:
+            points = list(pair.get("points", []))
+            drift_points = list(pair.get("drift_points", []))
+            for idx, drift_point in enumerate(drift_points, start=1):
+                if idx >= len(points):
+                    continue
+                start_point = points[idx - 1]
+                end_point = points[idx]
+                rate = float(drift_point.get("drift_rate", np.nan))
+                if not np.isfinite(rate):
+                    continue
+                start_label = str(start_point.get("test_label", "")).strip()
+                end_label = str(end_point.get("test_label", "")).strip()
+                start_date = start_label.split("|", 1)[0].strip() if start_label else "unknown date"
+                end_date = end_label.split("|", 1)[0].strip() if end_label else "unknown date"
+                delta_days = float(end_point.get("elapsed_days", np.nan) - start_point.get("elapsed_days", np.nan))
+                rows.append(
+                    {
+                        "pair_label": str(pair.get("label", "")),
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "delta_days": delta_days,
+                        "rate": rate,
+                        "abs_rate": abs(rate),
+                    }
+                )
+        rows.sort(key=lambda item: (-float(item["abs_rate"]), -float(item["rate"]), str(item["pair_label"])))
+        return rows[: max(1, int(top_n))], len(rows)
+
+
+
+    def _render_resonator_neighbor_top_rates_window(self) -> None:
+        if self.res_neighbor_top_rates_text is None:
+            return
+        self.res_neighbor_top_rates_text.configure(state="normal")
+        self.res_neighbor_top_rates_text.delete("1.0", "end")
+
+        try:
+            rows, total_count = self._resonator_neighbor_top_drift_rates(top_n=10)
+        except Exception as exc:
+            if self.res_neighbor_top_rates_status_var is not None:
+                self.res_neighbor_top_rates_status_var.set(str(exc))
+            return
+
+        header = (
+            f"{'Rank':>4}  {'Pair':<14}  {'Start Date':<12}  {'End Date':<12}  {'Delta Days':>10}  {'Rate (df/f/day)':>16}\n"
+        )
+        self.res_neighbor_top_rates_text.insert("end", header)
+        self.res_neighbor_top_rates_text.insert("end", "-" * 82 + "\n")
+        for rank, row in enumerate(rows, start=1):
+            self.res_neighbor_top_rates_text.insert(
+                "end",
+                (
+                    f"{rank:>4d}  "
+                    f"{str(row['pair_label']):<14}  "
+                    f"{str(row['start_date']):<12}  "
+                    f"{str(row['end_date']):<12}  "
+                    f"{float(row['delta_days']):>10.3f}  "
+                    f"{float(row['rate']):>+16.6e}\n"
+                ),
+            )
+        self.res_neighbor_top_rates_text.configure(state="disabled")
+
+        if self.res_neighbor_top_rates_status_var is not None:
+            mode = (
+                str(self.res_neighbor_dfrel_mode_var.get())
+                if self.res_neighbor_dfrel_mode_var is not None
+                else "drift"
+            ).strip().lower()
+            self.res_neighbor_top_rates_status_var.set(
+                f"Showing top {len(rows)} of {int(total_count)} neighboring pair interval rate(s), sorted by |rate| descending (mode: {mode})."
+            )
 
 
 
@@ -427,6 +586,8 @@ class ResonatorNeighborDfrelWindowMixin:
         self.res_neighbor_dfrel_canvas.draw_idle()
         if self.res_neighbor_scan_window is not None and self.res_neighbor_scan_window.winfo_exists():
             self._render_resonator_neighbor_scan_window()
+        if self.res_neighbor_top_rates_window is not None and self.res_neighbor_top_rates_window.winfo_exists():
+            self._render_resonator_neighbor_top_rates_window()
 
 
 
