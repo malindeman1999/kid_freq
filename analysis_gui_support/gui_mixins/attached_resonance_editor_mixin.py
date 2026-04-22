@@ -180,6 +180,10 @@ class AttachedResonanceEditorMixin:
         self._attached_res_edit_pending_add = False
         self._attached_res_edit_default_xlim = None
         self._attached_res_edit_missing_normalized_warned = None
+        self._attached_res_edit_warnings_cache = []
+        self._attached_res_edit_overlay_artists = []
+        self._attached_res_edit_marker_artists = {}
+        self._attached_res_edit_track_artists = {}
         self._attached_res_edit_snapshot = self._attached_resonance_editor_capture_snapshot()
         self._attached_res_edit_undo_stack = []
         self._attached_res_edit_changed = False
@@ -217,6 +221,10 @@ class AttachedResonanceEditorMixin:
         self._attached_res_edit_pending_add = False
         self._attached_res_edit_default_xlim = None
         self._attached_res_edit_missing_normalized_warned = None
+        self._attached_res_edit_warnings_cache = []
+        self._attached_res_edit_overlay_artists = []
+        self._attached_res_edit_marker_artists = {}
+        self._attached_res_edit_track_artists = {}
         self._attached_res_edit_snapshot = None
         self._attached_res_edit_undo_stack = []
         self._attached_res_edit_changed = False
@@ -446,6 +454,295 @@ class AttachedResonanceEditorMixin:
             "#ffbb78",
         ]
 
+    def _attached_resonance_editor_row_resonators(self, row: dict) -> list[dict]:
+        scan = row["scan"]
+        payload = scan.candidate_resonators.get("sheet_resonances")
+        assignments = payload.get("assignments") if isinstance(payload, dict) else {}
+        if not isinstance(assignments, dict):
+            return []
+        freq = np.asarray(row["freq"], dtype=float)
+        if freq.size == 0:
+            return []
+        resonators: list[dict] = []
+        for resonator_number, record in assignments.items():
+            if not isinstance(record, dict):
+                continue
+            try:
+                target_hz = float(record.get("frequency_hz"))
+            except Exception:
+                continue
+            if not (float(freq[0]) <= target_hz <= float(freq[-1])):
+                continue
+            resonators.append(
+                {
+                    "resonator_number": str(resonator_number).strip(),
+                    "target_hz": target_hz,
+                }
+            )
+        return sorted(resonators, key=lambda item: item["target_hz"])
+
+    def _attached_resonance_editor_clear_overlay_artists(self) -> None:
+        for artist in list(getattr(self, "_attached_res_edit_overlay_artists", [])):
+            try:
+                artist.remove()
+            except Exception:
+                pass
+        self._attached_res_edit_overlay_artists = []
+        self._attached_res_edit_marker_artists = {}
+        self._attached_res_edit_track_artists = {}
+
+    @staticmethod
+    def _attached_resonance_editor_marker_key(scan_key: str, resonator_number: str) -> tuple[str, str]:
+        return (str(scan_key), str(resonator_number))
+
+    @staticmethod
+    def _attached_resonance_editor_apply_marker_style(marker_record: dict, is_selected: bool) -> None:
+        line = marker_record.get("line")
+        text = marker_record.get("text")
+        if line is not None:
+            line.set_markersize(9 if is_selected else 6)
+            line.set_markeredgecolor("black" if is_selected else "tab:red")
+        if text is not None:
+            text.set_color("black" if is_selected else "tab:red")
+
+    def _attached_resonance_editor_refresh_track_for_resonator(self, resonator_number: str) -> None:
+        if self.attached_res_edit_ax is None:
+            return
+        label = str(resonator_number)
+        points = [p for p in self._attached_res_edit_points if str(p.get("resonator_number")) == label]
+        points = sorted(points, key=lambda item: float(item["y"]), reverse=True)
+        line = self._attached_res_edit_track_artists.get(label)
+        if len(points) < 2:
+            if line is not None:
+                try:
+                    line.remove()
+                except Exception:
+                    pass
+                self._attached_res_edit_track_artists.pop(label, None)
+                if line in self._attached_res_edit_overlay_artists:
+                    self._attached_res_edit_overlay_artists.remove(line)
+            return
+        x_data = [float(pt["x_ghz"]) for pt in points]
+        y_data = [float(pt["y"]) for pt in points]
+        if line is None:
+            line = self.attached_res_edit_ax.plot(
+                x_data,
+                y_data,
+                linestyle=":",
+                linewidth=1.0,
+                color="tab:red",
+                alpha=0.9,
+                zorder=2,
+            )[0]
+            self._attached_res_edit_track_artists[label] = line
+            self._attached_res_edit_overlay_artists.append(line)
+        else:
+            line.set_data(x_data, y_data)
+
+    def _attached_resonance_editor_draw_overlay(self) -> None:
+        if self.attached_res_edit_ax is None:
+            return
+        rows = self._attached_res_edit_rows_cache
+        offset_by_scan_key = self._attached_res_edit_offset_by_scan_key
+        if not rows or not offset_by_scan_key:
+            return
+        ax = self.attached_res_edit_ax
+        self._attached_resonance_editor_clear_overlay_artists()
+        self._attached_res_edit_points = []
+        resonator_tracks: dict[str, list[tuple[float, float]]] = {}
+        resonator_markers: list[dict] = []
+        overlay_artists: list[object] = []
+        y_text_offset = 0.18
+
+        for row in rows:
+            scan = row["scan"]
+            scan_key = str(row["scan_key"])
+            offset = float(offset_by_scan_key.get(scan_key, 0.0))
+            amp_display = self._attached_resonance_editor_display_amp(row["amp"])
+            for resonator in self._attached_resonance_editor_row_resonators(row):
+                target_hz = float(resonator["target_hz"])
+                target_ghz = target_hz / 1.0e9
+                y_pt = self._interpolate_y(row["freq"], amp_display, target_hz) + offset
+                resonator_number = str(resonator["resonator_number"])
+                point = {
+                    "scan": scan,
+                    "scan_key": scan_key,
+                    "resonator_number": resonator_number,
+                    "x_ghz": target_ghz,
+                    "y": y_pt,
+                    "freq_hz": target_hz,
+                }
+                self._attached_res_edit_points.append(point)
+                resonator_markers.append(point)
+                resonator_tracks.setdefault(resonator_number, []).append((target_ghz, y_pt))
+
+        for _resonator_number, points in resonator_tracks.items():
+            if len(points) < 2:
+                continue
+            points = sorted(points, key=lambda item: item[1], reverse=True)
+            line = ax.plot(
+                [pt[0] for pt in points],
+                [pt[1] for pt in points],
+                linestyle=":",
+                linewidth=1.0,
+                color="tab:red",
+                alpha=0.9,
+                zorder=2,
+            )[0]
+            overlay_artists.append(line)
+            self._attached_res_edit_track_artists[str(_resonator_number)] = line
+
+        for point in resonator_markers:
+            is_selected = self._attached_res_edit_selected == (point["scan_key"], point["resonator_number"])
+            marker_line = ax.plot(
+                [point["x_ghz"]],
+                [point["y"]],
+                linestyle="none",
+                marker="o",
+                markersize=(9 if is_selected else 6),
+                markerfacecolor="none",
+                markeredgecolor=("black" if is_selected else "tab:red"),
+                markeredgewidth=1.5,
+                zorder=4,
+            )[0]
+            marker_text = ax.text(
+                point["x_ghz"],
+                point["y"] - y_text_offset,
+                point["resonator_number"],
+                ha="center",
+                va="top",
+                fontsize=8,
+                color=("black" if is_selected else "tab:red"),
+                zorder=5,
+            )
+            overlay_artists.append(marker_line)
+            overlay_artists.append(marker_text)
+            self._attached_res_edit_marker_artists[
+                self._attached_resonance_editor_marker_key(point["scan_key"], point["resonator_number"])
+            ] = {"line": marker_line, "text": marker_text}
+        self._attached_res_edit_overlay_artists = overlay_artists
+
+    def _attached_resonance_editor_fast_add_overlay_update(
+        self,
+        *,
+        scan,
+        resonator_number: str,
+        target_hz: float,
+        previous_selected: Optional[tuple[str, str]],
+    ) -> None:
+        if self.attached_res_edit_ax is None:
+            self._attached_resonance_editor_redraw_overlay()
+            return
+        scan_key = self._scan_key(scan)
+        rows = self._attached_res_edit_rows_cache
+        row = None
+        for candidate in rows:
+            if str(candidate.get("scan_key")) == str(scan_key):
+                row = candidate
+                break
+        if row is None:
+            self._attached_resonance_editor_redraw_overlay()
+            return
+        offset = float(self._attached_res_edit_offset_by_scan_key.get(str(scan_key), 0.0))
+        amp_display = self._attached_resonance_editor_display_amp(row["amp"])
+        x_ghz = float(target_hz) / 1.0e9
+        y_val = self._interpolate_y(row["freq"], amp_display, float(target_hz)) + offset
+        marker_key = self._attached_resonance_editor_marker_key(str(scan_key), str(resonator_number))
+        existing_marker = self._attached_res_edit_marker_artists.get(marker_key)
+        if existing_marker is not None:
+            for artist in (existing_marker.get("line"), existing_marker.get("text")):
+                if artist is None:
+                    continue
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+                if artist in self._attached_res_edit_overlay_artists:
+                    self._attached_res_edit_overlay_artists.remove(artist)
+            self._attached_res_edit_marker_artists.pop(marker_key, None)
+            self._attached_res_edit_points = [
+                pt for pt in self._attached_res_edit_points
+                if not (str(pt.get("scan_key")) == str(scan_key) and str(pt.get("resonator_number")) == str(resonator_number))
+            ]
+
+        point = {
+            "scan": scan,
+            "scan_key": str(scan_key),
+            "resonator_number": str(resonator_number),
+            "x_ghz": x_ghz,
+            "y": y_val,
+            "freq_hz": float(target_hz),
+        }
+        self._attached_res_edit_points.append(point)
+        marker_line = self.attached_res_edit_ax.plot(
+            [x_ghz],
+            [y_val],
+            linestyle="none",
+            marker="o",
+            markersize=6,
+            markerfacecolor="none",
+            markeredgecolor="tab:red",
+            markeredgewidth=1.5,
+            zorder=4,
+        )[0]
+        marker_text = self.attached_res_edit_ax.text(
+            x_ghz,
+            y_val - 0.18,
+            str(resonator_number),
+            ha="center",
+            va="top",
+            fontsize=8,
+            color="tab:red",
+            zorder=5,
+        )
+        self._attached_res_edit_overlay_artists.append(marker_line)
+        self._attached_res_edit_overlay_artists.append(marker_text)
+        marker_record = {"line": marker_line, "text": marker_text}
+        self._attached_res_edit_marker_artists[marker_key] = marker_record
+
+        if previous_selected is not None:
+            prev_key = self._attached_resonance_editor_marker_key(previous_selected[0], previous_selected[1])
+            prev_marker = self._attached_res_edit_marker_artists.get(prev_key)
+            if prev_marker is not None and prev_key != marker_key:
+                self._attached_resonance_editor_apply_marker_style(prev_marker, False)
+        self._attached_resonance_editor_apply_marker_style(marker_record, True)
+        self._attached_resonance_editor_refresh_track_for_resonator(str(resonator_number))
+
+    def _attached_resonance_editor_update_status_message(self) -> None:
+        if self.attached_res_edit_status_var is None:
+            return
+        warnings = list(getattr(self, "_attached_res_edit_warnings_cache", []))
+        status = (
+            "Left-click a resonator to select. Double-click on the same scan to move it. "
+            "Use 'Add Resonator' then click a scan to add one."
+        )
+        if warnings:
+            status += " Missing normalized data for: " + ", ".join(warnings[:6])
+            if len(warnings) > 6:
+                status += f", ... (+{len(warnings) - 6} more)"
+        if self._attached_res_edit_pending_add:
+            resonator_number = self._attached_resonance_editor_working_number()
+            status = f"Add mode: click near a scan trace to add resonator {resonator_number}."
+            if warnings:
+                status += " Missing normalized data for: " + ", ".join(warnings[:4])
+                if len(warnings) > 4:
+                    status += f", ... (+{len(warnings) - 4} more)"
+        self.attached_res_edit_status_var.set(status)
+
+    def _attached_resonance_editor_redraw_overlay(self) -> None:
+        if self.attached_res_edit_ax is None or self.attached_res_edit_canvas is None:
+            self._render_attached_resonance_editor()
+            return
+        if not self._attached_res_edit_rows_cache or not self._attached_res_edit_offset_by_scan_key:
+            self._render_attached_resonance_editor()
+            return
+        self._attached_resonance_editor_draw_overlay()
+        self._attached_resonance_editor_update_status_message()
+        self._attached_resonance_editor_update_add_button()
+        self._attached_resonance_editor_update_undo_button()
+        self._attached_resonance_editor_update_save_button()
+        self.attached_res_edit_canvas.draw_idle()
+
 
     def _render_attached_resonance_editor(self) -> None:
         if self.attached_res_edit_figure is None or self.attached_res_edit_canvas is None:
@@ -472,6 +769,11 @@ class AttachedResonanceEditorMixin:
                 message += " Missing normalized data for: " + ", ".join(warnings[:6])
                 if len(warnings) > 6:
                     message += f", ... (+{len(warnings) - 6} more)"
+            self._attached_res_edit_rows_cache = []
+            self._attached_res_edit_offset_by_scan_key = {}
+            self._attached_res_edit_warnings_cache = list(warnings)
+            self._attached_res_edit_points = []
+            self._attached_res_edit_overlay_artists = []
             if self.attached_res_edit_status_var is not None:
                 self.attached_res_edit_status_var.set(message)
             self.attached_res_edit_figure.clear()
@@ -493,6 +795,7 @@ class AttachedResonanceEditorMixin:
         ax = self.attached_res_edit_figure.add_subplot(111)
         self.attached_res_edit_ax = ax
         self._attached_res_edit_points = []
+        self._attached_resonance_editor_clear_overlay_artists()
         self._attached_res_edit_rows_cache = rows
         offset_by_scan_key, tick_info = self._attached_resonance_editor_offset_map(
             rows,
@@ -504,13 +807,9 @@ class AttachedResonanceEditorMixin:
         freq_max = max(float(row["freq"][-1]) for row in rows) / 1.0e9
         x_pad = max((freq_max - freq_min) * 0.01, 1e-6)
 
-        resonator_tracks: dict[str, list[tuple[float, float]]] = {}
-        resonator_markers: list[dict] = []
         y_by_scan_key: dict[str, np.ndarray] = {}
-        y_text_offset = 0.18
         trace_colors = self._attached_resonance_editor_trace_colors()
         for row in rows:
-            scan = row["scan"]
             scan_key = str(row["scan_key"])
             offset = float(offset_by_scan_key[scan_key])
             freq_ghz = np.asarray(row["freq"], dtype=float) / 1.0e9
@@ -519,61 +818,6 @@ class AttachedResonanceEditorMixin:
             y_by_scan_key[scan_key] = y
             trace_color = trace_colors[int(row.get("scan_index", 0)) % len(trace_colors)]
             ax.plot(freq_ghz, y, linewidth=1.0, color=trace_color, alpha=0.9, zorder=1)
-
-            for resonator in row["resonators"]:
-                target_hz = float(resonator["target_hz"])
-                target_ghz = target_hz / 1.0e9
-                y_pt = self._interpolate_y(row["freq"], amp_display, target_hz) + offset
-                resonator_number = str(resonator["resonator_number"])
-                point = {
-                    "scan": scan,
-                    "scan_key": scan_key,
-                    "resonator_number": resonator_number,
-                    "x_ghz": target_ghz,
-                    "y": y_pt,
-                    "freq_hz": target_hz,
-                }
-                self._attached_res_edit_points.append(point)
-                resonator_markers.append(point)
-                resonator_tracks.setdefault(resonator_number, []).append((target_ghz, y_pt))
-
-        for resonator_number, points in resonator_tracks.items():
-            if len(points) < 2:
-                continue
-            points = sorted(points, key=lambda item: item[1], reverse=True)
-            ax.plot(
-                [pt[0] for pt in points],
-                [pt[1] for pt in points],
-                linestyle=":",
-                linewidth=1.0,
-                color="tab:red",
-                alpha=0.9,
-                zorder=2,
-            )
-
-        for point in resonator_markers:
-            is_selected = self._attached_res_edit_selected == (point["scan_key"], point["resonator_number"])
-            ax.plot(
-                [point["x_ghz"]],
-                [point["y"]],
-                linestyle="none",
-                marker="o",
-                markersize=(9 if is_selected else 6),
-                markerfacecolor="none",
-                markeredgecolor=("black" if is_selected else "tab:red"),
-                markeredgewidth=1.5,
-                zorder=4,
-            )
-            ax.text(
-                point["x_ghz"],
-                point["y"] - y_text_offset,
-                point["resonator_number"],
-                ha="center",
-                va="top",
-                fontsize=8,
-                color=("black" if is_selected else "tab:red"),
-                zorder=5,
-            )
 
         ax.set_xlabel("Frequency (GHz)")
         ax.set_ylabel("Normalized |S21| + vertical offset")
@@ -590,23 +834,9 @@ class AttachedResonanceEditorMixin:
         else:
             ax.set_xlim(self._attached_res_edit_default_xlim)
 
-        if self.attached_res_edit_status_var is not None:
-            status = (
-                "Left-click a resonator to select. Double-click on the same scan to move it. "
-                "Use 'Add Resonator' then click a scan to add one."
-            )
-            if warnings:
-                status += " Missing normalized data for: " + ", ".join(warnings[:6])
-                if len(warnings) > 6:
-                    status += f", ... (+{len(warnings) - 6} more)"
-            if self._attached_res_edit_pending_add:
-                resonator_number = self._attached_resonance_editor_working_number()
-                status = f"Add mode: click near a scan trace to add resonator {resonator_number}."
-                if warnings:
-                    status += " Missing normalized data for: " + ", ".join(warnings[:4])
-                    if len(warnings) > 4:
-                        status += f", ... (+{len(warnings) - 4} more)"
-            self.attached_res_edit_status_var.set(status)
+        self._attached_res_edit_warnings_cache = list(warnings)
+        self._attached_resonance_editor_draw_overlay()
+        self._attached_resonance_editor_update_status_message()
         self._attached_resonance_editor_update_add_button()
         self._attached_resonance_editor_update_undo_button()
         self._attached_resonance_editor_update_save_button()
@@ -708,7 +938,7 @@ class AttachedResonanceEditorMixin:
                 )
             else:
                 self.attached_res_edit_status_var.set("Add mode deactivated.")
-        self._render_attached_resonance_editor()
+        self._attached_resonance_editor_redraw_overlay()
 
 
     def _attached_resonance_editor_update_add_button(self) -> None:
@@ -765,7 +995,7 @@ class AttachedResonanceEditorMixin:
         self._attached_resonance_editor_update_save_button()
         if self.attached_res_edit_status_var is not None:
             self.attached_res_edit_status_var.set("Undid last resonator marker edit.")
-        self._render_attached_resonance_editor()
+        self._attached_resonance_editor_redraw_overlay()
 
 
     def _attached_resonance_editor_renumber_low_to_high(self) -> None:
@@ -864,7 +1094,7 @@ class AttachedResonanceEditorMixin:
             self.attached_res_edit_status_var.set(
                 f"Renumbered {len(ordered_labels)} resonator marker number(s) from low to high mean frequency across {changed_scans} scan(s)."
             )
-        self._render_attached_resonance_editor()
+        self._attached_resonance_editor_redraw_overlay()
 
 
     def _attached_resonance_editor_working_number(self) -> str:
@@ -939,7 +1169,7 @@ class AttachedResonanceEditorMixin:
             break
         self._attached_res_edit_selected = None
         self._attached_resonance_editor_reset_working_number()
-        self._render_attached_resonance_editor()
+        self._attached_resonance_editor_redraw_overlay()
 
 
     def _attached_resonance_editor_clear_selected_scan_markers(self) -> None:
@@ -1002,7 +1232,7 @@ class AttachedResonanceEditorMixin:
             self.attached_res_edit_status_var.set(
                 f"Cleared attached resonator markers from {cleared} selected scan(s)."
             )
-        self._render_attached_resonance_editor()
+        self._attached_resonance_editor_redraw_overlay()
 
 
     def _attached_resonance_editor_on_click(self, event) -> None:
@@ -1036,7 +1266,7 @@ class AttachedResonanceEditorMixin:
             self._attached_res_edit_selected = None
             if self.attached_res_edit_status_var is not None:
                 self.attached_res_edit_status_var.set("No resonator selected.")
-            self._render_attached_resonance_editor()
+            self._attached_resonance_editor_redraw_overlay()
             return
 
         self._attached_res_edit_selected = (nearest["scan_key"], nearest["resonator_number"])
@@ -1044,7 +1274,7 @@ class AttachedResonanceEditorMixin:
             self.attached_res_edit_status_var.set(
                 f"Selected resonator {nearest['resonator_number']} on {Path(nearest['scan'].filename).name}."
             )
-        self._render_attached_resonance_editor()
+        self._attached_resonance_editor_redraw_overlay()
 
 
     def _attached_resonance_editor_find_nearest_point(self, x_ghz: float, y_val: float) -> Optional[dict]:
@@ -1295,9 +1525,21 @@ class AttachedResonanceEditorMixin:
                 {"scan": scan.filename, "resonator_number": resonator_number, "frequency_hz": target_hz},
             )
         )
+        previous_selected = self._attached_res_edit_selected
         self._attached_res_edit_changed = True
         self._attached_res_edit_selected = (self._scan_key(scan), resonator_number)
-        self._render_attached_resonance_editor()
+        self._attached_resonance_editor_fast_add_overlay_update(
+            scan=scan,
+            resonator_number=str(resonator_number),
+            target_hz=float(target_hz),
+            previous_selected=previous_selected,
+        )
+        self._attached_resonance_editor_update_status_message()
+        self._attached_resonance_editor_update_add_button()
+        self._attached_resonance_editor_update_undo_button()
+        self._attached_resonance_editor_update_save_button()
+        if self.attached_res_edit_canvas is not None:
+            self.attached_res_edit_canvas.draw_idle()
 
 
     def _attached_resonance_editor_visible_range_hz(self) -> Optional[tuple[float, float]]:
@@ -1380,7 +1622,7 @@ class AttachedResonanceEditorMixin:
             )
         )
         self._attached_res_edit_changed = True
-        self._render_attached_resonance_editor()
+        self._attached_resonance_editor_redraw_overlay()
 
 def main() -> None:
     root = tk.Tk()
