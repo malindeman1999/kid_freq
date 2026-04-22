@@ -38,12 +38,16 @@ class AttachedResonanceEditorMixin:
 
         controls = tk.Frame(self.attached_res_edit_window, padx=8, pady=8)
         controls.pack(side="top", fill="x")
+        controls_row = tk.Frame(controls)
+        controls_row.pack(side="top", fill="x")
+        action_controls = tk.Frame(controls_row)
+        action_controls.pack(side="left", anchor="w")
+        number_controls = tk.Frame(controls_row)
+        number_controls.pack(side="left", anchor="w", padx=(12, 0))
         self.attached_res_edit_status_var = tk.StringVar(value="Normalized selected scans will be plotted.")
         tk.Label(controls, textvariable=self.attached_res_edit_status_var, anchor="w").pack(
-            side="left", fill="x", expand=True
+            side="top", fill="x", pady=(8, 0)
         )
-        number_controls = tk.Frame(controls)
-        number_controls.pack(side="right")
         self.attached_res_edit_add_button = tk.Button(
             number_controls, text="Add Resonator", width=14, command=self._attached_resonance_editor_toggle_add
         )
@@ -127,36 +131,36 @@ class AttachedResonanceEditorMixin:
             command=self._attached_resonance_editor_set_next_unused_number,
         ).pack(side="left", padx=(6, 0))
         self.attached_res_edit_renumber_button = tk.Button(
-            controls,
+            action_controls,
             text="Renumber All Low->High",
             width=18,
             command=self._attached_resonance_editor_renumber_low_to_high,
         )
-        self.attached_res_edit_renumber_button.pack(side="right", padx=(8, 0))
+        self.attached_res_edit_renumber_button.pack(side="left", padx=(0, 8))
         self.attached_res_edit_undo_button = tk.Button(
-            controls, text="Undo", width=10, command=self._attached_resonance_editor_undo
+            action_controls, text="Undo", width=10, command=self._attached_resonance_editor_undo
         )
-        self.attached_res_edit_undo_button.pack(side="right", padx=(8, 0))
+        self.attached_res_edit_undo_button.pack(side="left", padx=(0, 8))
         tk.Button(
-            controls, text="Delete Selected", width=14, command=self._attached_resonance_editor_delete_selected
-        ).pack(side="right", padx=(8, 0))
+            action_controls, text="Delete Selected", width=14, command=self._attached_resonance_editor_delete_selected
+        ).pack(side="left", padx=(0, 8))
         tk.Button(
-            controls,
+            action_controls,
             text="Clear Sel. Scan Markers",
             width=20,
             command=self._attached_resonance_editor_clear_selected_scan_markers,
-        ).pack(side="right", padx=(8, 0))
+        ).pack(side="left", padx=(0, 8))
         tk.Button(
-            controls, text="Reset View", width=12, command=self._attached_resonance_editor_reset_view
-        ).pack(side="right", padx=(8, 0))
+            action_controls, text="Reset View", width=12, command=self._attached_resonance_editor_reset_view
+        ).pack(side="left", padx=(0, 8))
         self.attached_res_edit_save_button = tk.Button(
-            controls, text="Save", width=10, command=self._attached_resonance_editor_save
+            action_controls, text="Save", width=10, command=self._attached_resonance_editor_save
         )
-        self.attached_res_edit_save_button.pack(side="right", padx=(8, 0))
+        self.attached_res_edit_save_button.pack(side="left", padx=(0, 8))
         self.attached_res_edit_exit_button = tk.Button(
-            controls, text="Exit", width=12, command=self._attached_resonance_editor_exit
+            action_controls, text="Exit", width=12, command=self._attached_resonance_editor_exit
         )
-        self.attached_res_edit_exit_button.pack(side="right", padx=(8, 0))
+        self.attached_res_edit_exit_button.pack(side="left")
 
         self.attached_res_edit_figure = Figure(figsize=(12, 7))
         self.attached_res_edit_canvas = FigureCanvasTkAgg(
