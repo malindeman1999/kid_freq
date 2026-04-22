@@ -674,23 +674,42 @@ class ResonatorNeighborDfrelWindowMixin:
 
         connector_count = 0
         visible_pair_labels: set[str] = set()
-        for row in rows:
-            row_points = points_by_scan_key.get(str(row["scan_key"]), {})
+        for row_idx in range(len(rows) - 1):
+            row_lo = rows[row_idx]
+            row_hi = rows[row_idx + 1]
+            row_lo_points = points_by_scan_key.get(str(row_lo["scan_key"]), {})
+            row_hi_points = points_by_scan_key.get(str(row_hi["scan_key"]), {})
             for pair in pair_series:
                 low_label = str(pair["low_label"])
                 high_label = str(pair["high_label"])
-                if low_label not in row_points or high_label not in row_points:
+                if (
+                    low_label not in row_lo_points
+                    or high_label not in row_lo_points
+                    or low_label not in row_hi_points
+                    or high_label not in row_hi_points
+                ):
                     continue
-                low_pt = row_points[low_label]
-                high_pt = row_points[high_label]
-                ax.plot(
-                    [float(low_pt["x_ghz"]), float(high_pt["x_ghz"])],
-                    [float(low_pt["y"]), float(high_pt["y"])],
-                    linestyle=":",
-                    linewidth=2.4,
-                    color=pair["color"],
-                    alpha=0.9,
-                    zorder=3,
+                low_lo = row_lo_points[low_label]
+                high_lo = row_lo_points[high_label]
+                low_hi = row_hi_points[low_label]
+                high_hi = row_hi_points[high_label]
+                ax.fill(
+                    [
+                        float(low_lo["x_ghz"]),
+                        float(high_lo["x_ghz"]),
+                        float(high_hi["x_ghz"]),
+                        float(low_hi["x_ghz"]),
+                    ],
+                    [
+                        float(low_lo["y"]),
+                        float(high_lo["y"]),
+                        float(high_hi["y"]),
+                        float(low_hi["y"]),
+                    ],
+                    facecolor=pair["color"],
+                    edgecolor="none",
+                    alpha=0.5,
+                    zorder=1.9,
                 )
                 connector_count += 1
                 visible_pair_labels.add(str(pair["label"]))
@@ -831,7 +850,7 @@ class ResonatorNeighborDfrelWindowMixin:
         if self.res_neighbor_scan_status_var is not None:
             status = (
                 f"Showing {int(draw_stats['marker_count'])} marker(s), {len(data['pair_series'])} active neighboring pair(s), and "
-                f"{int(draw_stats['connector_count'])} same-scan pair connector(s); threshold {threshold_rel:.4f} df/f."
+                f"{int(draw_stats['connector_count'])} pair quadrilateral region(s); threshold {threshold_rel:.4f} df/f."
             )
             if warnings:
                 status += " Missing normalized data for: " + ", ".join(warnings[:6])
