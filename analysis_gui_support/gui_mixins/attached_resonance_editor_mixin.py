@@ -222,11 +222,13 @@ class AttachedResonanceEditorMixin:
         self._attached_res_edit_changed = False
 
 
-    def _attached_resonance_editor_capture_snapshot(self) -> dict:
+    def _attached_resonance_editor_capture_snapshot(self, scan_keys: set[str] | None = None) -> dict:
         scan_payloads: dict[str, object] = {}
         scan_history_lengths: dict[str, int] = {}
         for scan in self.dataset.vna_scans:
             key = self._scan_key(scan)
+            if scan_keys is not None and key not in scan_keys:
+                continue
             payload = scan.candidate_resonators.get("sheet_resonances")
             scan_payloads[key] = copy.deepcopy(payload) if isinstance(payload, dict) else None
             scan_history_lengths[key] = len(scan.processing_history)
@@ -281,8 +283,10 @@ class AttachedResonanceEditorMixin:
         self._attached_resonance_editor_apply_snapshot(self._attached_res_edit_snapshot)
 
 
-    def _attached_resonance_editor_push_undo_snapshot(self) -> None:
-        self._attached_res_edit_undo_stack.append(self._attached_resonance_editor_capture_snapshot())
+    def _attached_resonance_editor_push_undo_snapshot(self, scan_keys: set[str] | None = None) -> None:
+        self._attached_res_edit_undo_stack.append(
+            self._attached_resonance_editor_capture_snapshot(scan_keys=scan_keys)
+        )
         self._attached_resonance_editor_update_undo_button()
 
 
@@ -502,14 +506,17 @@ class AttachedResonanceEditorMixin:
 
         resonator_tracks: dict[str, list[tuple[float, float]]] = {}
         resonator_markers: list[dict] = []
+        y_by_scan_key: dict[str, np.ndarray] = {}
         y_text_offset = 0.18
         trace_colors = self._attached_resonance_editor_trace_colors()
         for row in rows:
             scan = row["scan"]
-            offset = float(offset_by_scan_key[str(row["scan_key"])])
+            scan_key = str(row["scan_key"])
+            offset = float(offset_by_scan_key[scan_key])
             freq_ghz = np.asarray(row["freq"], dtype=float) / 1.0e9
             amp_display = self._attached_resonance_editor_display_amp(row["amp"])
             y = amp_display + offset
+            y_by_scan_key[scan_key] = y
             trace_color = trace_colors[int(row.get("scan_index", 0)) % len(trace_colors)]
             ax.plot(freq_ghz, y, linewidth=1.0, color=trace_color, alpha=0.9, zorder=1)
 
@@ -517,7 +524,6 @@ class AttachedResonanceEditorMixin:
                 target_hz = float(resonator["target_hz"])
                 target_ghz = target_hz / 1.0e9
                 y_pt = self._interpolate_y(row["freq"], amp_display, target_hz) + offset
-                scan_key = str(row["scan_key"])
                 resonator_number = str(resonator["resonator_number"])
                 point = {
                     "scan": scan,
@@ -575,16 +581,8 @@ class AttachedResonanceEditorMixin:
         ax.set_yticks([item[0] for item in tick_info])
         ax.set_yticklabels([item[1] for item in tick_info], fontsize=8)
 
-        y_low = min(
-            float(np.min(self._attached_resonance_editor_display_amp(row["amp"])))
-            + float(offset_by_scan_key[str(row["scan_key"])])
-            for row in rows
-        )
-        y_high = max(
-            float(np.max(self._attached_resonance_editor_display_amp(row["amp"])))
-            + float(offset_by_scan_key[str(row["scan_key"])])
-            for row in rows
-        )
+        y_low = min(float(np.min(y_by_scan_key[str(row["scan_key"])])) for row in rows)
+        y_high = max(float(np.max(y_by_scan_key[str(row["scan_key"])])) for row in rows)
         ax.set_ylim(y_low - 0.2, y_high + 0.2)
         self._attached_res_edit_default_xlim = (freq_min - 0.5 * x_pad, freq_max + 2.0 * x_pad)
         if prior_xlim is not None:
@@ -927,7 +925,7 @@ class AttachedResonanceEditorMixin:
             assignments = payload.get("assignments")
             if not isinstance(assignments, dict):
                 break
-            self._attached_resonance_editor_push_undo_snapshot()
+            self._attached_resonance_editor_push_undo_snapshot(scan_keys={str(scan_key)})
             assignments.pop(resonator_number, None)
             if not assignments:
                 scan.candidate_resonators.pop("sheet_resonances", None)
@@ -974,7 +972,9 @@ class AttachedResonanceEditorMixin:
         if not ok:
             return
 
-        self._attached_resonance_editor_push_undo_snapshot()
+        self._attached_resonance_editor_push_undo_snapshot(
+            scan_keys={self._scan_key(scan) for scan in scans_with_markers}
+        )
         cleared = 0
         for scan in scans_with_markers:
             scan.candidate_resonators.pop("sheet_resonances", None)
@@ -1023,10 +1023,10 @@ class AttachedResonanceEditorMixin:
                     )
                 return
 
-        nearest = self._attached_resonance_editor_find_nearest_point(float(event.xdata), float(event.ydata))
         if self._attached_res_edit_pending_add:
             self._attached_resonance_editor_add_at_click(float(event.xdata), float(event.ydata))
             return
+        nearest = self._attached_resonance_editor_find_nearest_point(float(event.xdata), float(event.ydata))
 
         if event.dblclick and self._attached_res_edit_selected is not None:
             self._attached_resonance_editor_move_selected(float(event.xdata), float(event.ydata))
@@ -1280,7 +1280,7 @@ class AttachedResonanceEditorMixin:
         self._attached_resonance_editor_signal_success()
         payload = self._sheet_resonance_attachment(scan)
         assignments = payload["assignments"]
-        self._attached_resonance_editor_push_undo_snapshot()
+        self._attached_resonance_editor_push_undo_snapshot(scan_keys={self._scan_key(scan)})
         assignments[resonator_number] = {
             "frequency_hz": target_hz,
             "sheet_path": "",
@@ -1369,7 +1369,7 @@ class AttachedResonanceEditorMixin:
         assignments = payload.get("assignments")
         if not isinstance(assignments, dict) or resonator_number not in assignments:
             return
-        self._attached_resonance_editor_push_undo_snapshot()
+        self._attached_resonance_editor_push_undo_snapshot(scan_keys={str(scan_key)})
         nearest_idx = int(np.argmin(np.abs(np.asarray(target_row["freq"], dtype=float) - x_ghz * 1.0e9)))
         target_hz = float(target_row["freq"][nearest_idx])
         assignments[resonator_number]["frequency_hz"] = target_hz
