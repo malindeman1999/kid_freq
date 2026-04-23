@@ -153,6 +153,9 @@ class AttachedResonanceEditorMixin:
         tk.Button(
             action_controls, text="Reset View", width=12, command=self._attached_resonance_editor_reset_view
         ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            action_controls, text="Reset Y", width=10, command=self._attached_resonance_editor_reset_y_view
+        ).pack(side="left", padx=(0, 8))
         self.attached_res_edit_save_button = tk.Button(
             action_controls, text="Save", width=10, command=self._attached_resonance_editor_save
         )
@@ -743,6 +746,103 @@ class AttachedResonanceEditorMixin:
         self._attached_resonance_editor_update_save_button()
         self.attached_res_edit_canvas.draw_idle()
 
+    def _attached_resonance_editor_fast_refresh_scan_overlay(self, scan_key: str) -> bool:
+        if self.attached_res_edit_ax is None or self.attached_res_edit_canvas is None:
+            return False
+        rows = self._attached_res_edit_rows_cache
+        offset_by_scan_key = self._attached_res_edit_offset_by_scan_key
+        if not rows or not offset_by_scan_key:
+            return False
+        row = None
+        for candidate in rows:
+            if str(candidate.get("scan_key")) == str(scan_key):
+                row = candidate
+                break
+        if row is None:
+            return False
+
+        affected_labels: set[str] = set()
+        # Remove existing markers for this scan from artists and point cache.
+        keys_to_remove: list[tuple[str, str]] = []
+        for key in list(self._attached_res_edit_marker_artists.keys()):
+            if str(key[0]) == str(scan_key):
+                keys_to_remove.append(key)
+        for key in keys_to_remove:
+            marker_record = self._attached_res_edit_marker_artists.pop(key, None)
+            if marker_record is None:
+                continue
+            affected_labels.add(str(key[1]))
+            for artist in (marker_record.get("line"), marker_record.get("text")):
+                if artist is None:
+                    continue
+                try:
+                    artist.remove()
+                except Exception:
+                    pass
+                if artist in self._attached_res_edit_overlay_artists:
+                    self._attached_res_edit_overlay_artists.remove(artist)
+
+        self._attached_res_edit_points = [
+            pt for pt in self._attached_res_edit_points if str(pt.get("scan_key")) != str(scan_key)
+        ]
+
+        # Rebuild markers for this scan from current assignments.
+        scan = row["scan"]
+        offset = float(offset_by_scan_key.get(str(scan_key), 0.0))
+        amp_display = self._attached_resonance_editor_display_amp(row["amp"])
+        for resonator in self._attached_resonance_editor_row_resonators(row):
+            resonator_number = str(resonator["resonator_number"])
+            target_hz = float(resonator["target_hz"])
+            x_ghz = target_hz / 1.0e9
+            y_val = self._interpolate_y(row["freq"], amp_display, target_hz) + offset
+            point = {
+                "scan": scan,
+                "scan_key": str(scan_key),
+                "resonator_number": resonator_number,
+                "x_ghz": x_ghz,
+                "y": y_val,
+                "freq_hz": target_hz,
+            }
+            self._attached_res_edit_points.append(point)
+            is_selected = self._attached_res_edit_selected == (str(scan_key), resonator_number)
+            marker_line = self.attached_res_edit_ax.plot(
+                [x_ghz],
+                [y_val],
+                linestyle="none",
+                marker="o",
+                markersize=(9 if is_selected else 6),
+                markerfacecolor="none",
+                markeredgecolor=("black" if is_selected else "tab:red"),
+                markeredgewidth=1.5,
+                zorder=4,
+            )[0]
+            marker_text = self.attached_res_edit_ax.text(
+                x_ghz,
+                y_val - 0.18,
+                resonator_number,
+                ha="center",
+                va="top",
+                fontsize=8,
+                color=("black" if is_selected else "tab:red"),
+                zorder=5,
+            )
+            self._attached_res_edit_overlay_artists.append(marker_line)
+            self._attached_res_edit_overlay_artists.append(marker_text)
+            self._attached_res_edit_marker_artists[(str(scan_key), resonator_number)] = {
+                "line": marker_line,
+                "text": marker_text,
+            }
+            affected_labels.add(resonator_number)
+
+        for label in affected_labels:
+            self._attached_resonance_editor_refresh_track_for_resonator(label)
+        self._attached_resonance_editor_update_status_message()
+        self._attached_resonance_editor_update_add_button()
+        self._attached_resonance_editor_update_undo_button()
+        self._attached_resonance_editor_update_save_button()
+        self.attached_res_edit_canvas.draw_idle()
+        return True
+
 
     def _render_attached_resonance_editor(self) -> None:
         if self.attached_res_edit_figure is None or self.attached_res_edit_canvas is None:
@@ -852,6 +952,37 @@ class AttachedResonanceEditorMixin:
         if self.attached_res_edit_canvas is not None:
             self.attached_res_edit_canvas.draw_idle()
 
+    def _attached_resonance_editor_full_ylim(self) -> Optional[tuple[float, float]]:
+        rows = self._attached_res_edit_rows_cache
+        offset_by_scan_key = self._attached_res_edit_offset_by_scan_key
+        if not rows or not offset_by_scan_key:
+            return None
+        y_low = None
+        y_high = None
+        for row in rows:
+            scan_key = str(row["scan_key"])
+            offset = float(offset_by_scan_key.get(scan_key, 0.0))
+            amp_display = self._attached_resonance_editor_display_amp(row["amp"])
+            if amp_display.size == 0:
+                continue
+            lo = float(np.min(amp_display)) + offset
+            hi = float(np.max(amp_display)) + offset
+            y_low = lo if y_low is None else min(y_low, lo)
+            y_high = hi if y_high is None else max(y_high, hi)
+        if y_low is None or y_high is None:
+            return None
+        return (y_low - 0.2, y_high + 0.2)
+
+    def _attached_resonance_editor_reset_y_view(self) -> None:
+        if self.attached_res_edit_ax is None:
+            return
+        full_ylim = self._attached_resonance_editor_full_ylim()
+        if full_ylim is None:
+            return
+        self.attached_res_edit_ax.set_ylim(full_ylim)
+        if self.attached_res_edit_canvas is not None:
+            self.attached_res_edit_canvas.draw_idle()
+
 
     def _attached_resonance_editor_curve_spacing(self) -> float:
         if self.attached_res_edit_spacing_var is None:
@@ -928,8 +1059,14 @@ class AttachedResonanceEditorMixin:
 
 
     def _attached_resonance_editor_toggle_add(self) -> None:
+        previous_selected = self._attached_res_edit_selected
         self._attached_res_edit_pending_add = not self._attached_res_edit_pending_add
         self._attached_res_edit_selected = None
+        if previous_selected is not None:
+            prev_key = self._attached_resonance_editor_marker_key(previous_selected[0], previous_selected[1])
+            prev_marker = self._attached_res_edit_marker_artists.get(prev_key)
+            if prev_marker is not None:
+                self._attached_resonance_editor_apply_marker_style(prev_marker, False)
         if self.attached_res_edit_status_var is not None:
             if self._attached_res_edit_pending_add:
                 resonator_number = self._attached_resonance_editor_working_number()
@@ -938,7 +1075,9 @@ class AttachedResonanceEditorMixin:
                 )
             else:
                 self.attached_res_edit_status_var.set("Add mode deactivated.")
-        self._attached_resonance_editor_redraw_overlay()
+        self._attached_resonance_editor_update_add_button()
+        if self.attached_res_edit_canvas is not None:
+            self.attached_res_edit_canvas.draw_idle()
 
 
     def _attached_resonance_editor_update_add_button(self) -> None:
@@ -989,12 +1128,19 @@ class AttachedResonanceEditorMixin:
             self._attached_resonance_editor_update_undo_button()
             return
         snapshot = self._attached_res_edit_undo_stack.pop()
+        snapshot_scan_keys = []
+        if isinstance(snapshot, dict):
+            payloads = snapshot.get("scan_payloads", {})
+            if isinstance(payloads, dict):
+                snapshot_scan_keys = [str(key) for key in payloads.keys()]
         self._attached_resonance_editor_apply_snapshot(snapshot)
         self._attached_res_edit_changed = bool(self._attached_res_edit_undo_stack)
         self._attached_resonance_editor_update_undo_button()
         self._attached_resonance_editor_update_save_button()
         if self.attached_res_edit_status_var is not None:
             self.attached_res_edit_status_var.set("Undid last resonator marker edit.")
+        if len(snapshot_scan_keys) == 1 and self._attached_resonance_editor_fast_refresh_scan_overlay(snapshot_scan_keys[0]):
+            return
         self._attached_resonance_editor_redraw_overlay()
 
 
@@ -1146,6 +1292,7 @@ class AttachedResonanceEditorMixin:
                 self.attached_res_edit_status_var.set("No resonator selected to delete.")
             return
         scan_key, resonator_number = self._attached_res_edit_selected
+        deleted = False
         for scan in self.dataset.vna_scans:
             if self._scan_key(scan) != scan_key:
                 continue
@@ -1166,9 +1313,41 @@ class AttachedResonanceEditorMixin:
                 )
             )
             self._attached_res_edit_changed = True
+            deleted = True
             break
         self._attached_res_edit_selected = None
         self._attached_resonance_editor_reset_working_number()
+        if deleted:
+            marker_key = self._attached_resonance_editor_marker_key(str(scan_key), str(resonator_number))
+            marker_record = self._attached_res_edit_marker_artists.pop(marker_key, None)
+            if marker_record is not None:
+                for artist in (marker_record.get("line"), marker_record.get("text")):
+                    if artist is None:
+                        continue
+                    try:
+                        artist.remove()
+                    except Exception:
+                        pass
+                    if artist in self._attached_res_edit_overlay_artists:
+                        self._attached_res_edit_overlay_artists.remove(artist)
+            self._attached_res_edit_points = [
+                pt for pt in self._attached_res_edit_points
+                if not (
+                    str(pt.get("scan_key")) == str(scan_key)
+                    and str(pt.get("resonator_number")) == str(resonator_number)
+                )
+            ]
+            self._attached_resonance_editor_refresh_track_for_resonator(str(resonator_number))
+            self._attached_resonance_editor_update_add_button()
+            self._attached_resonance_editor_update_undo_button()
+            self._attached_resonance_editor_update_save_button()
+            if self.attached_res_edit_status_var is not None:
+                self.attached_res_edit_status_var.set(
+                    f"Deleted resonator {resonator_number} on {Path(scan.filename).name}."
+                )
+            if self.attached_res_edit_canvas is not None:
+                self.attached_res_edit_canvas.draw_idle()
+            return
         self._attached_resonance_editor_redraw_overlay()
 
 
@@ -1262,19 +1441,36 @@ class AttachedResonanceEditorMixin:
             self._attached_resonance_editor_move_selected(float(event.xdata), float(event.ydata))
             return
 
+        previous_selected = self._attached_res_edit_selected
         if nearest is None:
             self._attached_res_edit_selected = None
+            if previous_selected is not None:
+                prev_key = self._attached_resonance_editor_marker_key(previous_selected[0], previous_selected[1])
+                prev_marker = self._attached_res_edit_marker_artists.get(prev_key)
+                if prev_marker is not None:
+                    self._attached_resonance_editor_apply_marker_style(prev_marker, False)
             if self.attached_res_edit_status_var is not None:
                 self.attached_res_edit_status_var.set("No resonator selected.")
-            self._attached_resonance_editor_redraw_overlay()
+            if self.attached_res_edit_canvas is not None:
+                self.attached_res_edit_canvas.draw_idle()
             return
 
         self._attached_res_edit_selected = (nearest["scan_key"], nearest["resonator_number"])
+        if previous_selected is not None and previous_selected != self._attached_res_edit_selected:
+            prev_key = self._attached_resonance_editor_marker_key(previous_selected[0], previous_selected[1])
+            prev_marker = self._attached_res_edit_marker_artists.get(prev_key)
+            if prev_marker is not None:
+                self._attached_resonance_editor_apply_marker_style(prev_marker, False)
+        new_key = self._attached_resonance_editor_marker_key(nearest["scan_key"], nearest["resonator_number"])
+        new_marker = self._attached_res_edit_marker_artists.get(new_key)
+        if new_marker is not None:
+            self._attached_resonance_editor_apply_marker_style(new_marker, True)
         if self.attached_res_edit_status_var is not None:
             self.attached_res_edit_status_var.set(
                 f"Selected resonator {nearest['resonator_number']} on {Path(nearest['scan'].filename).name}."
             )
-        self._attached_resonance_editor_redraw_overlay()
+        if self.attached_res_edit_canvas is not None:
+            self.attached_res_edit_canvas.draw_idle()
 
 
     def _attached_resonance_editor_find_nearest_point(self, x_ghz: float, y_val: float) -> Optional[dict]:
