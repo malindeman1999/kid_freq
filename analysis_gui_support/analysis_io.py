@@ -26,7 +26,17 @@ def _read_app_state() -> Path:
             payload = json.loads(APP_STATE_FILE.read_text(encoding="utf-8"))
             dataset_path = payload.get("active_dataset_path", "")
             if dataset_path:
-                return Path(dataset_path)
+                candidate = Path(dataset_path)
+                if not candidate.is_absolute():
+                    candidate = (PROJECT_ROOT / candidate).resolve()
+                if candidate.exists():
+                    return candidate
+                parts = list(candidate.parts)
+                if "data_sets" in parts:
+                    rel_parts = parts[parts.index("data_sets") + 1 :]
+                    rebased = DATASETS_DIR.joinpath(*rel_parts)
+                    if rebased.exists():
+                        return rebased
         except Exception:
             pass
     return DEFAULT_DATASET_FILE

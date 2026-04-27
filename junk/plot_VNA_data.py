@@ -3,9 +3,9 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from tkinter import Tk, filedialog
 
-initial_dir = Path(
-    r"C:\Users\lindeman\OneDrive - JPL\Documents\PRIMA-related\PRIMA SUBPROJECTS\RELATIVE CHANGES IN RESONANCES\VNA data\from Chris\freq_shift_for_Logan\20240821"
-)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+default_vna_dir = PROJECT_ROOT.parent / "VNA data"
+initial_dir = default_vna_dir if default_vna_dir.exists() else Path.cwd()
 
 root = Tk()
 root.withdraw()

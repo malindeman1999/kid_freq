@@ -11,9 +11,9 @@ from tkinter import filedialog, messagebox
 
 from resonator.ComplexResonance import ComplexResonanceQi
 
-SYNTHETIC_VNA_OUTPUT_DIR = Path(
-    r"C:\Users\lindeman\OneDrive - JPL\Documents\PRIMA-related\PRIMA SUBPROJECTS\RELATIVE CHANGES IN RESONANCES\VNA data\synthetic_vna"
-)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+VNA_DATA_DIR = PROJECT_ROOT.parent / "VNA data"
+SYNTHETIC_VNA_OUTPUT_DIR = VNA_DATA_DIR / "synthetic_vna"
 
 
 def _load_frequency_grid(path: Path) -> np.ndarray:
@@ -240,7 +240,7 @@ class SyntheticGeneratorMixin:
         self.synth_canvas.draw_idle()
 
     def _synth_select_source_file(self) -> None:
-        initial = Path("VNA data")
+        initial = VNA_DATA_DIR
         if not initial.exists():
             initial = Path.cwd()
         path_text = filedialog.askopenfilename(
