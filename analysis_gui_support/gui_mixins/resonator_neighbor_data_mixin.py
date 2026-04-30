@@ -597,6 +597,16 @@ class ResonatorNeighborDataMixin:
             mean_abs = float(np.mean(abs_arr)) if abs_arr.size else np.nan
             std_abs = float(np.std(abs_arr)) if abs_arr.size else np.nan
             rms = float(np.sqrt(np.mean(np.square(drift_arr)))) if drift_arr.size else np.nan
+            delta_days = float(interval["delta_days"])
+            drift_change_arr = drift_arr * delta_days
+            abs_change_arr = np.abs(drift_change_arr)
+            mean_abs_change = float(np.mean(abs_change_arr)) if abs_change_arr.size else np.nan
+            std_abs_change = float(np.std(abs_change_arr)) if abs_change_arr.size else np.nan
+            rms_change = (
+                float(np.sqrt(np.mean(np.square(drift_change_arr))))
+                if drift_change_arr.size
+                else np.nan
+            )
 
             points.append(
                 {
@@ -614,6 +624,9 @@ class ResonatorNeighborDataMixin:
                     "mean_abs_drift_rate": mean_abs,
                     "std_abs_drift_rate": std_abs,
                     "rms_drift_rate": rms,
+                    "mean_abs_drift": mean_abs_change,
+                    "std_abs_drift": std_abs_change,
+                    "rms_drift": rms_change,
                 }
             )
 

@@ -10,6 +10,38 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 
 class ResonatorNeighborCorrWindowMixin:
+    def _resonator_neighbor_interval_corr_matrix(self, summary: dict) -> tuple[np.ndarray, list[str], np.ndarray]:
+        intervals = list(summary.get("intervals", []))
+        n_intervals = len(intervals)
+        matrix = np.full((n_intervals, n_intervals), np.nan, dtype=float)
+        end_elapsed = np.full(n_intervals, np.nan, dtype=float)
+        labels: list[str] = []
+
+        for idx, interval in enumerate(intervals):
+            try:
+                end_elapsed[idx] = float(interval.get("end_elapsed_days", np.nan))
+            except Exception:
+                end_elapsed[idx] = np.nan
+            labels.append(f"I{idx + 1}")
+
+        for i in range(n_intervals):
+            drift_i = dict(intervals[i].get("pair_drift_by_label", {}))
+            if len(drift_i) < 2:
+                continue
+            matrix[i, i] = 1.0
+            for j in range(i + 1, n_intervals):
+                drift_j = dict(intervals[j].get("pair_drift_by_label", {}))
+                common_labels = sorted(set(drift_i).intersection(drift_j), key=self._resonator_sort_key)
+                if len(common_labels) < 2:
+                    continue
+                x = np.asarray([float(drift_i[label]) for label in common_labels], dtype=float)
+                y = np.asarray([float(drift_j[label]) for label in common_labels], dtype=float)
+                corr_value = self._resonator_neighbor_pair_correlation(x, y)
+                if np.isfinite(corr_value):
+                    matrix[i, j] = float(corr_value)
+                    matrix[j, i] = float(corr_value)
+        return matrix, labels, end_elapsed
+
     def open_resonator_neighbor_corr_window(self) -> None:
         if self.res_neighbor_corr_window is not None and self.res_neighbor_corr_window.winfo_exists():
             self.res_neighbor_corr_window.lift()
@@ -31,6 +63,7 @@ class ResonatorNeighborCorrWindowMixin:
         self.res_neighbor_corr_sep_rel_var = tk.DoubleVar(value=0.004)
         self.res_neighbor_corr_initial_date_var = tk.StringVar(value=self._dataset_res_neighbor_initial_date())
         self.res_neighbor_corr_show_curves_var = tk.BooleanVar(value=True)
+        self.res_neighbor_corr_mag_mode_var = tk.StringVar(value="drift")
 
         tk.Label(control_row, text="Initial Date").pack(side="left", padx=(0, 4))
         initial_date_entry = tk.Entry(control_row, width=12, textvariable=self.res_neighbor_corr_initial_date_var)
@@ -55,6 +88,21 @@ class ResonatorNeighborCorrWindowMixin:
             control_row,
             text="Colored Curves",
             variable=self.res_neighbor_corr_show_curves_var,
+            command=self._render_resonator_neighbor_corr_window,
+        ).pack(side="left", padx=(0, 12))
+        tk.Label(control_row, text="Magnitude").pack(side="left", padx=(0, 4))
+        tk.Radiobutton(
+            control_row,
+            text="Drift",
+            variable=self.res_neighbor_corr_mag_mode_var,
+            value="drift",
+            command=self._render_resonator_neighbor_corr_window,
+        ).pack(side="left", padx=(0, 4))
+        tk.Radiobutton(
+            control_row,
+            text="Drift Rate",
+            variable=self.res_neighbor_corr_mag_mode_var,
+            value="rate",
             command=self._render_resonator_neighbor_corr_window,
         ).pack(side="left", padx=(0, 12))
         tk.Button(
@@ -102,6 +150,7 @@ class ResonatorNeighborCorrWindowMixin:
         self.res_neighbor_corr_sep_rel_var = None
         self.res_neighbor_corr_initial_date_var = None
         self.res_neighbor_corr_show_curves_var = None
+        self.res_neighbor_corr_mag_mode_var = None
         self.res_neighbor_corr_sep_scale = None
         self._res_neighbor_corr_axes = None
 
@@ -112,9 +161,11 @@ class ResonatorNeighborCorrWindowMixin:
             return
 
         self.res_neighbor_corr_figure.clear()
-        ax_corr = self.res_neighbor_corr_figure.add_subplot(211)
-        ax_mag = self.res_neighbor_corr_figure.add_subplot(212, sharex=ax_corr)
-        self._res_neighbor_corr_axes = (ax_corr, ax_mag)
+        gs = self.res_neighbor_corr_figure.add_gridspec(2, 2, width_ratios=[2.5, 1.5], height_ratios=[1.0, 1.0])
+        ax_corr = self.res_neighbor_corr_figure.add_subplot(gs[0, :])
+        ax_mag = self.res_neighbor_corr_figure.add_subplot(gs[1, 0], sharex=ax_corr)
+        ax_matrix = self.res_neighbor_corr_figure.add_subplot(gs[1, 1])
+        self._res_neighbor_corr_axes = (ax_corr, ax_mag, ax_matrix)
 
         threshold_rel = (
             float(self.res_neighbor_corr_sep_rel_var.get())
@@ -146,8 +197,23 @@ class ResonatorNeighborCorrWindowMixin:
         q3_corr = np.asarray([float(item["q3_contribution"]) for item in points], dtype=float)
         pair_counts = np.asarray([int(item["pair_count"]) for item in points], dtype=int)
         common_counts = np.asarray([int(item["common_pair_count"]) for item in points], dtype=int)
-        y_mag = np.asarray([float(item["mean_abs_drift_rate"]) for item in points], dtype=float)
-        y_mag_std = np.asarray([float(item["std_abs_drift_rate"]) for item in points], dtype=float)
+        mag_mode = (
+            str(self.res_neighbor_corr_mag_mode_var.get()).strip().lower()
+            if self.res_neighbor_corr_mag_mode_var is not None
+            else "drift"
+        )
+        if mag_mode == "rate":
+            y_mag = np.asarray([float(item["mean_abs_drift_rate"]) for item in points], dtype=float)
+            y_mag_std = np.asarray([float(item["std_abs_drift_rate"]) for item in points], dtype=float)
+            mag_label = "|drift rate|"
+            mag_ylabel = "Mean |df/f per day|"
+            mag_title = "Neighbor Pair Drift Rate Magnitude vs Time"
+        else:
+            y_mag = np.asarray([float(item["mean_abs_drift"]) for item in points], dtype=float)
+            y_mag_std = np.asarray([float(item["std_abs_drift"]) for item in points], dtype=float)
+            mag_label = "|drift|"
+            mag_ylabel = "Mean |df/f|"
+            mag_title = "Neighbor Pair Drift Magnitude vs Time"
         norm, cmap = self._resonator_neighbor_pair_colors(data)
         pair_mean_freq_by_label = dict(summary.get("pair_mean_freq_by_label", {}))
         show_curves = (
@@ -262,7 +328,7 @@ class ResonatorNeighborCorrWindowMixin:
                 alpha=0.22,
                 linewidth=0.0,
                 zorder=1,
-                label="Mean |drift| +/- 1 std",
+                label=f"Mean {mag_label} +/- 1 std",
             )
             ax_mag.plot(
                 x_end[mag_mask],
@@ -272,7 +338,7 @@ class ResonatorNeighborCorrWindowMixin:
                 marker="o",
                 markersize=5.0,
                 zorder=3,
-                label="Mean |drift|",
+                label=f"Mean {mag_label}",
             )
 
         for x_value, y_value, pair_count in zip(x_end, y_mag, pair_counts):
@@ -356,11 +422,35 @@ class ResonatorNeighborCorrWindowMixin:
                 )
 
         ax_mag.set_xlabel("Interval End Time (days)")
-        ax_mag.set_ylabel("Mean |df/f per day|")
-        ax_mag.set_title("Neighbor Pair Drift Magnitude vs Time")
+        ax_mag.set_ylabel(mag_ylabel)
+        ax_mag.set_title(mag_title)
         ax_mag.grid(True, alpha=0.3)
         if np.any(mag_mask):
             ax_mag.legend(loc="best", fontsize=8)
+
+        corr_matrix, interval_labels, interval_end_elapsed = self._resonator_neighbor_interval_corr_matrix(summary)
+        if corr_matrix.size == 0:
+            ax_matrix.text(0.5, 0.5, "No interval matrix data", ha="center", va="center", transform=ax_matrix.transAxes)
+            ax_matrix.set_axis_off()
+        else:
+            cmap_matrix = plt.cm.get_cmap("bwr").copy()
+            cmap_matrix.set_bad(color="0.85")
+            img = ax_matrix.imshow(corr_matrix, cmap=cmap_matrix, vmin=-1.0, vmax=1.0, origin="upper", aspect="equal")
+            tick_positions = np.arange(len(interval_labels), dtype=float)
+            tick_labels = []
+            for label, end_day in zip(interval_labels, interval_end_elapsed):
+                if np.isfinite(end_day):
+                    tick_labels.append(f"{label}\n{float(end_day):.1f}d")
+                else:
+                    tick_labels.append(label)
+            ax_matrix.set_xticks(tick_positions)
+            ax_matrix.set_yticks(tick_positions)
+            ax_matrix.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=8)
+            ax_matrix.set_yticklabels(tick_labels, fontsize=8)
+            ax_matrix.set_xlabel("Interval")
+            ax_matrix.set_ylabel("Interval")
+            ax_matrix.set_title("Drift Correlation Between Intervals")
+            self.res_neighbor_corr_figure.colorbar(img, ax=ax_matrix, pad=0.02, fraction=0.046).set_label("Correlation")
 
         self.res_neighbor_corr_figure.tight_layout()
         if self.res_neighbor_corr_status_var is not None:
@@ -372,7 +462,8 @@ class ResonatorNeighborCorrWindowMixin:
                 f"{len(data['pair_series'])} neighboring pair(s). Top: "
                 f"{'colored traces show per-pair contribution, ' if show_curves else ''}"
                 f"grey band = middle 50%, black line = mean correlation with the reference interval ending at "
-                f"{float(ref_interval['end_elapsed_days']):.3f} day(s). Bottom: mean absolute pair drift rate with +/- 1 std; "
+                f"{float(ref_interval['end_elapsed_days']):.3f} day(s). Bottom: mean absolute pair "
+                f"{'drift rate' if mag_mode == 'rate' else 'drift'} with +/- 1 std; "
                 f"threshold {threshold_rel:.4f} df/f."
             )
         self.res_neighbor_corr_canvas.draw_idle()

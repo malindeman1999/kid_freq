@@ -313,8 +313,9 @@ class DataAnalysisGUI(
         self.res_neighbor_corr_sep_rel_var: Optional[tk.DoubleVar] = None
         self.res_neighbor_corr_initial_date_var: Optional[tk.StringVar] = None
         self.res_neighbor_corr_show_curves_var: Optional[tk.BooleanVar] = None
+        self.res_neighbor_corr_mag_mode_var: Optional[tk.StringVar] = None
         self.res_neighbor_corr_sep_scale: Optional[tk.Scale] = None
-        self._res_neighbor_corr_axes: tuple[object, object] | None = None
+        self._res_neighbor_corr_axes: tuple[object, ...] | None = None
         self.res_neighbor_scan_window: Optional[tk.Toplevel] = None
         self.res_neighbor_scan_canvas: Optional[FigureCanvasTkAgg] = None
         self.res_neighbor_scan_toolbar: Optional[NavigationToolbar2Tk] = None
