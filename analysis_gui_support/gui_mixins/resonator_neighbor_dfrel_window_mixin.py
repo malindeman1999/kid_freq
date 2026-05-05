@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import matplotlib.pyplot as plt
@@ -38,6 +38,7 @@ class ResonatorNeighborDfrelWindowMixin:
         self.res_neighbor_dfrel_sep_rel_var = tk.DoubleVar(value=0.004)
         self.res_neighbor_dfrel_show_iqr_var = tk.BooleanVar(value=True)
         self.res_neighbor_dfrel_mode_var = tk.StringVar(value="drift")
+        self.res_neighbor_dfrel_xaxis_mode_var = tk.StringVar(value="elapsed")
         self.res_neighbor_dfrel_initial_date_var = tk.StringVar(value=self._dataset_res_neighbor_initial_date())
 
         tk.Label(control_row, text="Initial Date").pack(side="left", padx=(0, 4))
@@ -84,6 +85,21 @@ class ResonatorNeighborDfrelWindowMixin:
             text="Spacing",
             value="spacing",
             variable=self.res_neighbor_dfrel_mode_var,
+            command=self._render_resonator_neighbor_dfrel_window,
+        ).pack(side="left", padx=(0, 8))
+        tk.Label(control_row, text="X-Axis").pack(side="left", padx=(8, 4))
+        tk.Radiobutton(
+            control_row,
+            text="Elapsed Time",
+            value="elapsed",
+            variable=self.res_neighbor_dfrel_xaxis_mode_var,
+            command=self._render_resonator_neighbor_dfrel_window,
+        ).pack(side="left", padx=(0, 6))
+        tk.Radiobutton(
+            control_row,
+            text="Date",
+            value="date",
+            variable=self.res_neighbor_dfrel_xaxis_mode_var,
             command=self._render_resonator_neighbor_dfrel_window,
         ).pack(side="left", padx=(0, 8))
         tk.Checkbutton(
@@ -139,6 +155,7 @@ class ResonatorNeighborDfrelWindowMixin:
         self.res_neighbor_dfrel_sep_rel_var = None
         self.res_neighbor_dfrel_show_iqr_var = None
         self.res_neighbor_dfrel_mode_var = None
+        self.res_neighbor_dfrel_xaxis_mode_var = None
         self.res_neighbor_dfrel_initial_date_var = None
         self.res_neighbor_dfrel_sep_scale = None
         self._res_neighbor_dfrel_ax = None
@@ -344,6 +361,11 @@ class ResonatorNeighborDfrelWindowMixin:
         vmin = float(norm.vmin)
         vmax = float(norm.vmax)
         show_iqr = bool(self.res_neighbor_dfrel_show_iqr_var.get()) if self.res_neighbor_dfrel_show_iqr_var is not None else True
+        xaxis_mode = (
+            str(self.res_neighbor_dfrel_xaxis_mode_var.get())
+            if self.res_neighbor_dfrel_xaxis_mode_var is not None
+            else "elapsed"
+        ).strip().lower()
 
         summary = []
         drift_single_interval_xlim: Optional[tuple[float, float]] = None
@@ -504,7 +526,19 @@ class ResonatorNeighborDfrelWindowMixin:
 
         ax.axhline(0.0, color="0.5", linewidth=0.8, linestyle="--")
         ax.grid(True, alpha=0.3)
-        ax.set_xlabel("Elapsed Time (days)")
+        origin_dt = data.get("elapsed_time_origin")
+        if xaxis_mode == "date" and isinstance(origin_dt, datetime):
+            ax.set_xlabel("Date")
+            ax.xaxis.set_major_formatter(
+                FuncFormatter(
+                    lambda value, _pos: (origin_dt + timedelta(days=float(value))).strftime("%Y-%m-%d")
+                    if np.isfinite(value)
+                    else ""
+                )
+            )
+            ax.tick_params(axis="x", labelrotation=30)
+        else:
+            ax.set_xlabel("Elapsed Time (days)")
         if mode == "drift":
             ax.set_ylabel("Neighbor Pair Gap Drift Rate (df/f per day)")
             ax.set_title("Neighbor Pair Gap Drift Rate vs Time")
