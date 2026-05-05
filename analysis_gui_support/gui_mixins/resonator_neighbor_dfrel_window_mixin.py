@@ -35,7 +35,8 @@ class ResonatorNeighborDfrelWindowMixin:
         self.res_neighbor_dfrel_status_var = tk.StringVar(
             value="Showing neighboring resonator-pair separation df/f versus elapsed time."
         )
-        self.res_neighbor_dfrel_sep_rel_var = tk.DoubleVar(value=0.004)
+        self.res_neighbor_dfrel_sep_rel_var = tk.DoubleVar(value=self._dataset_res_neighbor_sep_rel())
+        self._res_neighbor_dfrel_sep_changed = False
         self.res_neighbor_dfrel_show_iqr_var = tk.BooleanVar(value=True)
         self.res_neighbor_dfrel_mode_var = tk.StringVar(value="drift")
         self.res_neighbor_dfrel_xaxis_mode_var = tk.StringVar(value="elapsed")
@@ -66,6 +67,10 @@ class ResonatorNeighborDfrelWindowMixin:
             command=lambda _value: self._render_resonator_neighbor_dfrel_window(),
         )
         self.res_neighbor_dfrel_sep_scale.pack(side="left", padx=(0, 12))
+        self.res_neighbor_dfrel_sep_scale.bind(
+            "<ButtonRelease-1>",
+            self._on_res_neighbor_dfrel_sep_scale_release,
+        )
         tk.Radiobutton(
             control_row,
             text="Mean +/- Std Spacing",
@@ -145,6 +150,12 @@ class ResonatorNeighborDfrelWindowMixin:
 
 
     def _close_resonator_neighbor_dfrel_window(self) -> None:
+        slider_changed = self._sync_res_neighbor_sep_rel(autosave=False)
+        self._res_neighbor_dfrel_sep_changed = bool(self._res_neighbor_dfrel_sep_changed or slider_changed)
+        if self._res_neighbor_dfrel_sep_changed:
+            if self.res_neighbor_dfrel_status_var is not None:
+                self.res_neighbor_dfrel_status_var.set("Saving dataset...")
+            self._autosave_dataset()
         if self.res_neighbor_dfrel_window is not None and self.res_neighbor_dfrel_window.winfo_exists():
             self.res_neighbor_dfrel_window.destroy()
         self.res_neighbor_dfrel_window = None
@@ -158,8 +169,15 @@ class ResonatorNeighborDfrelWindowMixin:
         self.res_neighbor_dfrel_xaxis_mode_var = None
         self.res_neighbor_dfrel_initial_date_var = None
         self.res_neighbor_dfrel_sep_scale = None
+        self._res_neighbor_dfrel_sep_changed = False
         self._res_neighbor_dfrel_ax = None
         self._close_resonator_neighbor_top_rates_window()
+
+
+    def _on_res_neighbor_dfrel_sep_scale_release(self, _event=None) -> None:
+        changed = self._sync_res_neighbor_sep_rel(autosave=False)
+        if changed:
+            self._res_neighbor_dfrel_sep_changed = True
 
 
 
@@ -366,6 +384,28 @@ class ResonatorNeighborDfrelWindowMixin:
             if self.res_neighbor_dfrel_xaxis_mode_var is not None
             else "elapsed"
         ).strip().lower()
+        displacement_pair_series = self._resonator_neighbor_plot_series(data["pair_series"], "change")
+        final_displacements: list[float] = []
+        all_elapsed_days: list[float] = []
+        for pair in displacement_pair_series:
+            points = pair.get("points", [])
+            if not points:
+                continue
+            final_pt = points[-1]
+            y_final = float(final_pt.get("plot_df_over_f", final_pt["df_over_f"]))
+            if np.isfinite(y_final):
+                final_displacements.append(y_final)
+            for point in points:
+                x_value = float(point.get("elapsed_days", np.nan))
+                if np.isfinite(x_value):
+                    all_elapsed_days.append(x_value)
+        net_std = float(np.std(np.asarray(final_displacements, dtype=float))) if final_displacements else np.nan
+        elapsed_days = (
+            float(np.max(np.asarray(all_elapsed_days, dtype=float)) - np.min(np.asarray(all_elapsed_days, dtype=float)))
+            if all_elapsed_days
+            else np.nan
+        )
+        net_drift_rate = (net_std / elapsed_days) if np.isfinite(net_std) and np.isfinite(elapsed_days) and elapsed_days > 0.0 else np.nan
 
         summary = []
         drift_single_interval_xlim: Optional[tuple[float, float]] = None
@@ -542,9 +582,40 @@ class ResonatorNeighborDfrelWindowMixin:
         if mode == "drift":
             ax.set_ylabel("Neighbor Pair Gap Drift Rate (df/f per day)")
             ax.set_title("Neighbor Pair Gap Drift Rate vs Time")
+            drift_label = (
+                f"Drift rate = NET STD / elapsed days\n"
+                f"= {net_std:.3e} / {elapsed_days:.3f} = {net_drift_rate:.3e} df/f/day"
+                if np.isfinite(net_drift_rate)
+                else "Drift rate = NET STD / elapsed days: n/a"
+            )
+            ax.text(
+                0.02,
+                0.98,
+                drift_label,
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=9,
+                bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "alpha": 0.8, "edgecolor": "0.6"},
+            )
         elif mode == "change":
             ax.set_ylabel("Neighbor Pair Separation Displacement df/f")
             ax.set_title("Neighboring Resonator-Pair Separation Displacement vs Time")
+            std_label = (
+                f"NET displacement STD (final points): {net_std:.3e} df/f"
+                if np.isfinite(net_std)
+                else "NET displacement STD (final points): n/a"
+            )
+            ax.text(
+                0.02,
+                0.98,
+                std_label,
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=9,
+                bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "alpha": 0.8, "edgecolor": "0.6"},
+            )
         else:
             ax.set_ylabel("Neighbor Pair Separation df/f")
             ax.set_title("Neighboring Resonator-Pair Relative Separation vs Time")

@@ -53,6 +53,7 @@ class Dataset:
     dataset_name: str = ""
     created_at: str = ""
     res_neighbor_initial_date: str = ""
+    res_neighbor_dfrel_sep_rel: float = 0.004
     transcript: List[Dict[str, str]] = field(default_factory=list)
     processing_history: List[Dict[str, object]] = field(default_factory=list)
 

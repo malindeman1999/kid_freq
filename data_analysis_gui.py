@@ -301,6 +301,7 @@ class DataAnalysisGUI(
         self.res_neighbor_dfrel_xaxis_mode_var: Optional[tk.StringVar] = None
         self.res_neighbor_dfrel_initial_date_var: Optional[tk.StringVar] = None
         self.res_neighbor_dfrel_sep_scale: Optional[tk.Scale] = None
+        self._res_neighbor_dfrel_sep_changed: bool = False
         self._res_neighbor_dfrel_ax = None
         self.res_neighbor_top_rates_window: Optional[tk.Toplevel] = None
         self.res_neighbor_top_rates_status_var: Optional[tk.StringVar] = None

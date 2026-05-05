@@ -23,6 +23,15 @@ class DatasetLifecycleMixin:
         return str(getattr(self.dataset, "res_neighbor_initial_date", "") or "")
 
 
+    def _dataset_res_neighbor_sep_rel(self) -> float:
+        raw_value = getattr(self.dataset, "res_neighbor_dfrel_sep_rel", 0.004)
+        try:
+            value = float(raw_value)
+        except Exception:
+            value = 0.004
+        return min(max(value, 0.0), 0.04)
+
+
     def _sync_res_neighbor_initial_date(self, *, autosave: bool = False) -> None:
         if self.res_neighbor_dfrel_initial_date_var is None:
             return
@@ -34,6 +43,21 @@ class DatasetLifecycleMixin:
         self._refresh_status()
         if autosave:
             self._autosave_dataset()
+
+
+    def _sync_res_neighbor_sep_rel(self, *, autosave: bool = False) -> bool:
+        if self.res_neighbor_dfrel_sep_rel_var is None:
+            return False
+        new_value = min(max(float(self.res_neighbor_dfrel_sep_rel_var.get()), 0.0), 0.04)
+        old_value = self._dataset_res_neighbor_sep_rel()
+        if abs(new_value - old_value) < 1.0e-12:
+            return False
+        self.dataset.res_neighbor_dfrel_sep_rel = float(new_value)
+        self._mark_dirty()
+        self._refresh_status()
+        if autosave:
+            self._autosave_dataset()
+        return True
 
 
     def _refresh_status(self) -> None:
