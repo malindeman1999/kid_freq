@@ -617,3 +617,98 @@ def _try_load_vna_npy_pair(path_a: Path, path_b: Path) -> tuple[VNAScan | None, 
         )
     )
     return scan, None
+
+
+def _try_load_vna_text_amp_phase_pair(path_a: Path, path_b: Path) -> tuple[VNAScan | None, str | None]:
+    """Attempt loading two text files as one scan: [freq_MHz, amp_dBm] + [freq_MHz, phase_deg]."""
+    text_exts = {".txt", ".dat", ".csv"}
+    if path_a.suffix.lower() not in text_exts or path_b.suffix.lower() not in text_exts:
+        return None, None
+
+    name_a = path_a.name.lower()
+    name_b = path_b.name.lower()
+    a_is_amp = "amp" in name_a
+    b_is_amp = "amp" in name_b
+    a_is_phase = "phase" in name_a
+    b_is_phase = "phase" in name_b
+
+    if a_is_amp and b_is_phase:
+        amp_path, phase_path = path_a, path_b
+    elif b_is_amp and a_is_phase:
+        amp_path, phase_path = path_b, path_a
+    else:
+        return None, None
+
+    try:
+        amp_arr = np.loadtxt(amp_path, dtype=float)
+    except Exception as exc:
+        raise ValueError(f"Could not parse amplitude text file '{amp_path.name}': {exc}") from exc
+    try:
+        phase_arr = np.loadtxt(phase_path, dtype=float)
+    except Exception as exc:
+        raise ValueError(f"Could not parse phase text file '{phase_path.name}': {exc}") from exc
+
+    amp_arr = np.asarray(amp_arr, dtype=float)
+    phase_arr = np.asarray(phase_arr, dtype=float)
+    if amp_arr.ndim != 2 or amp_arr.shape[1] != 2:
+        raise ValueError(
+            f"Expected amplitude file with 2 columns [frequency_MHz, amplitude_dBm], got shape {amp_arr.shape}."
+        )
+    if phase_arr.ndim != 2 or phase_arr.shape[1] != 2:
+        raise ValueError(
+            f"Expected phase file with 2 columns [frequency_MHz, phase_deg], got shape {phase_arr.shape}."
+        )
+
+    freq_amp_mhz = np.asarray(amp_arr[:, 0], dtype=float)
+    amp_dbm = np.asarray(amp_arr[:, 1], dtype=float)
+    freq_phase_mhz = np.asarray(phase_arr[:, 0], dtype=float)
+    phase_deg = np.asarray(phase_arr[:, 1], dtype=float)
+    if freq_amp_mhz.size != amp_dbm.size or freq_phase_mhz.size != phase_deg.size:
+        raise ValueError("Frequency/value column sizes do not match within one of the text files.")
+    if freq_amp_mhz.size != freq_phase_mhz.size:
+        raise ValueError(
+            "Amplitude and phase files must have the same number of rows: "
+            f"{amp_path.name} has {freq_amp_mhz.size}, {phase_path.name} has {freq_phase_mhz.size}."
+        )
+    if freq_amp_mhz.size < 3:
+        raise ValueError("VNA data must contain at least 3 points.")
+
+    if not np.allclose(freq_amp_mhz, freq_phase_mhz, rtol=0.0, atol=1e-9):
+        raise ValueError(
+            "Frequency columns in amplitude and phase files do not match (MHz)."
+        )
+
+    freq_hz = freq_amp_mhz * 1.0e6
+    amp_linear = np.power(10.0, amp_dbm / 20.0)
+    s21_complex = _complex_from_polar(amp_linear, phase_deg)
+
+    loaded_at = datetime.now().isoformat(timespec="seconds")
+    file_timestamp = datetime.fromtimestamp(phase_path.stat().st_mtime).isoformat(timespec="seconds")
+    source_dir = phase_path.resolve().parent
+    scan = VNAScan(
+        filename=str(phase_path.resolve()),
+        source_dir=str(source_dir),
+        loaded_at=loaded_at,
+        file_timestamp=file_timestamp,
+        freq=freq_hz,
+        s21_complex_raw=s21_complex,
+        s21_phase_deg_unwrapped=None,
+    )
+    scan.processing_history.append(
+        _make_event(
+            "load_vna_text_pair_mhz_dbm_phase_deg",
+            {
+                "filename": scan.filename,
+                "source_dir": scan.source_dir,
+                "amplitude_file": str(amp_path.resolve()),
+                "phase_file": str(phase_path.resolve()),
+                "points": int(freq_hz.size),
+                "frequency_units_in": "MHz",
+                "frequency_units_stored": "Hz",
+                "amplitude_units_in": "dBm",
+                "phase_units_in": "deg",
+                "file_timestamp": scan.file_timestamp,
+            },
+        )
+    )
+    return scan, None

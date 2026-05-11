@@ -6,7 +6,12 @@ from typing import List, Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from analysis_gui_support.analysis_io import _load_vna_file, _load_vna_npy_mhz_db_deg, _try_load_vna_npy_pair
+from analysis_gui_support.analysis_io import (
+    _load_vna_file,
+    _load_vna_npy_mhz_db_deg,
+    _try_load_vna_npy_pair,
+    _try_load_vna_text_amp_phase_pair,
+)
 from analysis_gui_support.analysis_models import VNAScan, _make_event
 
 class ScanIOMixin:
@@ -161,6 +166,20 @@ class ScanIOMixin:
             pair_handled = False
             if len(paths) == 2:
                 try:
+                    pair_scan, pair_warning = _try_load_vna_text_amp_phase_pair(paths[0], paths[1])
+                except Exception as exc:
+                    failed.append(f"{paths[0].name} + {paths[1].name}: {exc}")
+                    pair_handled = True
+                else:
+                    if pair_scan is not None:
+                        _add_scan(pair_scan)
+                        self._mark_dirty()
+                        added_count += 1
+                        if pair_warning:
+                            warnings.append(pair_warning)
+                        pair_handled = True
+            if len(paths) == 2 and not pair_handled:
+                try:
                     pair_scan, pair_warning = _try_load_vna_npy_pair(paths[0], paths[1])
                 except Exception as exc:
                     failed.append(f"{paths[0].name} + {paths[1].name}: {exc}")
@@ -258,6 +277,7 @@ class ScanIOMixin:
             "  - .npy: (M,3,N) paged [freq, real, imag] -> flattened to 1 scan\n"
             "  - .npy: (2,N)/(N,2) [freq, complex]\n"
             "  - two 1D .npy files: [freq] + [complex]\n"
+            "  - two text files named with 'amp' and 'phase': [freq_MHz, amp_dBm] + [freq_MHz, phase_deg]\n"
             "  - text: 3-col [freq_Hz, real, imag]\n"
             "  - text: 2-col [freq_MHz, amp_dB] (phase assumed 0)\n"
             "  - .s2p: S21 (RI/MA/DB), freq units HZ/KHZ/MHZ/GHZ"
@@ -325,7 +345,12 @@ class ScanIOMixin:
         listbox.pack(fill="both", expand=True, padx=10, pady=4)
 
         for idx, scan in enumerate(self.dataset.vna_scans):
-            label = self._scan_dialog_label(scan, index=idx, include_loaded_at=True)
+            label = self._scan_dialog_label(
+                scan,
+                index=idx,
+                include_loaded_at=True,
+                include_group=True,
+            )
             listbox.insert(tk.END, label)
 
         def do_remove() -> None:
@@ -390,18 +415,20 @@ class ScanIOMixin:
         selector.transient(self.root)
         selector.grab_set()
 
-        existing_groups = sorted(
-            {int(scan.plot_group) for scan in self.dataset.vna_scans if scan.plot_group is not None}
-        )
-        prompt = (
-            "Choose the subset of currently selected analysis scans to join into one plot group.\n"
-            "Each scan can belong to only one group. Enter a positive integer to assign, or leave blank to clear."
-        )
-        if existing_groups:
-            prompt += "\nExisting groups: " + ", ".join(str(g) for g in existing_groups)
-        tk.Label(selector, text=prompt, anchor="w", justify="left", wraplength=860).pack(
-            anchor="w", padx=10, pady=(10, 6)
-        )
+        def _group_prompt_text() -> str:
+            existing_groups = sorted(
+                {int(scan.plot_group) for scan in self.dataset.vna_scans if scan.plot_group is not None}
+            )
+            prompt = (
+                "Choose the subset of currently selected analysis scans to join into one plot group.\n"
+                "Each scan can belong to only one group. Enter a positive integer to assign, or leave blank to clear."
+            )
+            if existing_groups:
+                prompt += "\nExisting groups: " + ", ".join(str(g) for g in existing_groups)
+            return prompt
+
+        prompt_label = tk.Label(selector, text=_group_prompt_text(), anchor="w", justify="left", wraplength=860)
+        prompt_label.pack(anchor="w", padx=10, pady=(10, 6))
 
         group_frame = tk.Frame(selector)
         group_frame.pack(fill="x", padx=10, pady=(0, 6))
@@ -422,6 +449,22 @@ class ScanIOMixin:
             )
             listbox.insert(tk.END, label)
             listbox.selection_set(idx)
+
+        def _refresh_group_listbox_labels(keep_indices: list[int]) -> None:
+            prompt_label.config(text=_group_prompt_text())
+            listbox.delete(0, tk.END)
+            for idx, scan in enumerate(scans):
+                label = self._scan_dialog_label(
+                    scan,
+                    index=idx,
+                    include_file_timestamp=True,
+                    include_loaded_at=True,
+                    include_group=True,
+                )
+                listbox.insert(tk.END, label)
+            for idx in keep_indices:
+                if 0 <= idx < len(scans):
+                    listbox.selection_set(idx)
 
         def do_apply() -> None:
             indices = sorted(listbox.curselection())
@@ -450,7 +493,6 @@ class ScanIOMixin:
 
             if changed == 0:
                 self._log("Grouping unchanged for selected scan subset.")
-                selector.destroy()
                 return
 
             self.dataset.processing_history.append(
@@ -466,6 +508,7 @@ class ScanIOMixin:
             self._mark_dirty()
             self._refresh_status()
             self._autosave_dataset()
+            _refresh_group_listbox_labels(indices)
             if new_group is None:
                 self._log(f"Cleared plot groups for {changed} selected scan(s).")
                 messagebox.showinfo("Plot groups updated", f"Cleared plot groups for {changed} selected scan(s).", parent=selector)
@@ -476,7 +519,6 @@ class ScanIOMixin:
                     f"Assigned plot group {new_group} to {changed} selected scan(s).",
                     parent=selector,
                 )
-            selector.destroy()
 
         btns = tk.Frame(selector)
         btns.pack(fill="x", padx=10, pady=(4, 10))
@@ -484,7 +526,7 @@ class ScanIOMixin:
         tk.Button(btns, text="Clear Selection", command=lambda: listbox.selection_clear(0, tk.END)).pack(
             side="left", padx=(6, 0)
         )
-        tk.Button(btns, text="Cancel", command=selector.destroy).pack(side="right")
+        tk.Button(btns, text="Exit", command=selector.destroy).pack(side="right")
         tk.Button(btns, text="Apply Group", command=do_apply).pack(side="right", padx=(0, 8))
 
 
