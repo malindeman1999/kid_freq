@@ -249,6 +249,8 @@ class DatasetLifecycleMixin:
         _write_app_state(self.dataset_path)
         if self.res_neighbor_dfrel_initial_date_var is not None:
             self.res_neighbor_dfrel_initial_date_var.set(self._dataset_res_neighbor_initial_date())
+        if getattr(self, "res_displacement_initial_date_var", None) is not None:
+            self.res_displacement_initial_date_var.set(self._dataset_res_neighbor_initial_date())
         self._reload_transcript_ui()
         self._mark_clean()
         self._refresh_status()
@@ -386,6 +388,8 @@ class DatasetLifecycleMixin:
             _write_app_state(self.dataset_path)
             if self.res_neighbor_dfrel_initial_date_var is not None:
                 self.res_neighbor_dfrel_initial_date_var.set(self._dataset_res_neighbor_initial_date())
+            if getattr(self, "res_displacement_initial_date_var", None) is not None:
+                self.res_displacement_initial_date_var.set(self._dataset_res_neighbor_initial_date())
             self._reload_transcript_ui()
             self._mark_clean()
             self._refresh_status()

@@ -303,6 +303,14 @@ class DataAnalysisGUI(
         self.res_neighbor_dfrel_sep_scale: Optional[tk.Scale] = None
         self._res_neighbor_dfrel_sep_changed: bool = False
         self._res_neighbor_dfrel_ax = None
+        self.res_displacement_window: Optional[tk.Toplevel] = None
+        self.res_displacement_canvas: Optional[FigureCanvasTkAgg] = None
+        self.res_displacement_toolbar: Optional[NavigationToolbar2Tk] = None
+        self.res_displacement_figure: Optional[Figure] = None
+        self.res_displacement_status_var: Optional[tk.StringVar] = None
+        self.res_displacement_xaxis_mode_var: Optional[tk.StringVar] = None
+        self.res_displacement_initial_date_var: Optional[tk.StringVar] = None
+        self._res_displacement_ax = None
         self.res_neighbor_top_rates_window: Optional[tk.Toplevel] = None
         self.res_neighbor_top_rates_status_var: Optional[tk.StringVar] = None
         self.res_neighbor_top_rates_tree: Optional[ttk.Treeview] = None
@@ -580,6 +588,7 @@ class DataAnalysisGUI(
         right_button_specs.append({"text": "Update Dates From Path", "command": self.open_update_dates_dialog})
         right_button_specs.append({"text": "Reorder Scans By Date", "command": self.reorder_vna_scans_by_date})
         right_button_specs.append({"text": "Pair df/f vs Time", "command": self.open_resonator_neighbor_dfrel_window})
+        right_button_specs.append({"text": "Resonator df/f vs Time", "command": self.open_resonator_displacement_window})
         right_button_specs.append({"text": "Pair Self Corr. vs Time", "command": self.open_resonator_neighbor_corr_window})
         right_button_specs.append({"text": "Shift Correl. Between Freqs.", "command": self.open_resonator_shift_correlation_window})
         right_button_specs.append({"text": "Histogram df2-df1", "command": self.open_resonator_pair_dfdiff_hist_window})
