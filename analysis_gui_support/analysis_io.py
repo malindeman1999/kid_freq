@@ -170,6 +170,7 @@ def _load_vna_npy(path: Path) -> VNAScan:
     # - column format: (N, 3) cols = [freq, real, imag]
     # - complex row:   (2, N) rows = [freq, complex_s21]
     # - complex col:   (N, 2) cols = [freq, complex_s21]
+    # - complex pages: (2, M, N) pages with rows [freq, complex_s21], flattened to one scan
     # - paged rows:    (M, 3, N) pages with rows [freq, real, imag], flattened to one scan
     if arr.ndim == 2 and arr.shape[1] == 3:
         freq = arr[:, 0]
@@ -187,6 +188,30 @@ def _load_vna_npy(path: Path) -> VNAScan:
     elif arr.ndim == 2 and arr.shape[0] == 2:
         freq = np.real(arr[0, :])
         s21_complex = arr[1, :]
+        s21_real = np.real(s21_complex)
+        s21_imag = np.imag(s21_complex)
+    elif arr.ndim == 3 and arr.shape[0] == 2 and np.iscomplexobj(arr):
+        # Complex paged VNA format:
+        #   arr[0, page, :] = frequency
+        #   arr[1, page, :] = complex S21
+        # Each page may be acquired high-to-low or low-to-high. Sort within each
+        # page by frequency, then sort pages by their low-frequency edge before
+        # flattening all pages into one scan.
+        page_freq = np.asarray(np.real(arr[0, :, :]), dtype=float)
+        page_s21 = np.asarray(arr[1, :, :], dtype=np.complex128)
+
+        page_sort_idx = np.argsort(page_freq, axis=1, kind="mergesort")
+        page_axis = np.arange(arr.shape[1])[:, None]
+        page_freq_sorted = page_freq[page_axis, page_sort_idx]
+        page_s21_sorted = page_s21[page_axis, page_sort_idx]
+
+        page_low_freq = page_freq_sorted[:, 0]
+        page_order = np.argsort(page_low_freq, kind="mergesort")
+        freq = np.reshape(page_freq_sorted[page_order, :], -1)
+        s21_complex = np.reshape(page_s21_sorted[page_order, :], -1)
+        combined_sort_idx = np.argsort(freq, kind="mergesort")
+        freq = freq[combined_sort_idx]
+        s21_complex = s21_complex[combined_sort_idx]
         s21_real = np.real(s21_complex)
         s21_imag = np.imag(s21_complex)
     elif arr.ndim == 3 and arr.shape[1] == 3:
@@ -209,6 +234,7 @@ def _load_vna_npy(path: Path) -> VNAScan:
         raise ValueError(
             "Expected shape (3, N) rows [freq, real, imag], (N, 3) columns [freq, real, imag], "
             "(2, N) rows [freq, complex_s21], (N, 2) columns [freq, complex_s21], or "
+            "(2, M, N) complex paged rows [freq, complex_s21], or "
             "(M, 3, N) paged rows [freq, real, imag], "
             f"got {arr.shape}"
         )
@@ -240,9 +266,39 @@ def _load_vna_npy(path: Path) -> VNAScan:
                 "filename": scan.filename,
                 "source_dir": scan.source_dir,
                 "shape": list(arr.shape),
-                "flattened_paged_input": bool(arr.ndim == 3 and arr.shape[1] == 3),
-                "paged_input_sorted_by_mean_frequency": bool(arr.ndim == 3 and arr.shape[1] == 3),
-                "paged_input_sorted_within_page_by_frequency": bool(arr.ndim == 3 and arr.shape[1] == 3),
+                "flattened_paged_input": bool(
+                    arr.ndim == 3
+                    and (
+                        (arr.shape[0] == 2 and np.iscomplexobj(arr))
+                        or arr.shape[1] == 3
+                    )
+                ),
+                "paged_input_sorted_by_frequency": bool(
+                    arr.ndim == 3
+                    and (
+                        (arr.shape[0] == 2 and np.iscomplexobj(arr))
+                        or arr.shape[1] == 3
+                    )
+                ),
+                "paged_input_sorted_within_page_by_frequency": bool(
+                    arr.ndim == 3
+                    and (
+                        (arr.shape[0] == 2 and np.iscomplexobj(arr))
+                        or arr.shape[1] == 3
+                    )
+                ),
+                "complex_paged_input_2_m_n": bool(
+                    arr.ndim == 3 and arr.shape[0] == 2 and np.iscomplexobj(arr)
+                ),
+                "complex_paged_combined_trace_sorted_by_frequency": bool(
+                    arr.ndim == 3 and arr.shape[0] == 2 and np.iscomplexobj(arr)
+                ),
+                "page_count": int(arr.shape[1])
+                if arr.ndim == 3 and arr.shape[0] == 2 and np.iscomplexobj(arr)
+                else int(arr.shape[0])
+                if arr.ndim == 3 and arr.shape[1] == 3
+                else 0,
+                "points_per_page": int(arr.shape[2]) if arr.ndim == 3 else 0,
                 "points_stored": int(freq.size),
                 "file_timestamp": scan.file_timestamp,
             },
