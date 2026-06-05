@@ -32,6 +32,7 @@ from analysis_gui_support.gui_mixins.baseline_filter_mixin import BaselineFilter
 from analysis_gui_support.gui_mixins.dataset_lifecycle_mixin import DatasetLifecycleMixin
 from analysis_gui_support.gui_mixins.dsdf_convolution_mixin import DSDFConvolutionMixin
 from analysis_gui_support.gui_mixins.gaussian_convolution_mixin import GaussianConvolutionMixin
+from analysis_gui_support.gui_mixins.gaussian_minima_link_mixin import GaussianMinimaLinkMixin
 from analysis_gui_support.gui_mixins.interpolation_smooth_mixin import InterpolationSmoothMixin
 from analysis_gui_support.gui_mixins.normalization_mixin import NormalizationMixin
 from analysis_gui_support.gui_mixins.phase_correction2_mixin import PhaseCorrection2Mixin
@@ -54,6 +55,7 @@ class DataAnalysisGUI(
     DatasetLifecycleMixin,
     DSDFConvolutionMixin,
     GaussianConvolutionMixin,
+    GaussianMinimaLinkMixin,
     InterpolationSmoothMixin,
     NormalizationMixin,
     PhaseCorrection2Mixin,
@@ -578,6 +580,8 @@ class DataAnalysisGUI(
         )
         right_button_specs.append({"button": self.res_button})
         right_button_specs.append({"text": "Mark Res. on Sel. Scans", "command": self.open_attached_resonance_editor})
+        right_button_specs.append({"text": "Clear All Res. Markers", "command": self.clear_all_resonator_markers})
+        right_button_specs.append({"text": "Link Gaussian Minima", "command": self.open_link_gaussian_minima_window})
         right_button_specs.append(
             {
                 "text": "Reset Selected Scans",
@@ -586,6 +590,8 @@ class DataAnalysisGUI(
         )
         right_button_specs.append({"text": "Plot Resonator Markers", "command": self.open_attached_resonance_plotter})
         right_button_specs.append({"text": "Update Dates From Path", "command": self.open_update_dates_dialog})
+        right_button_specs.append({"text": "Update Temps From Filename", "command": self.update_vna_temperatures_from_filenames})
+        right_button_specs.append({"text": "Update Powers From Filename", "command": self.update_vna_bias_powers_from_filenames})
         right_button_specs.append({"text": "Reorder Scans By Date", "command": self.reorder_vna_scans_by_date})
         right_button_specs.append({"text": "Pair df/f vs Time", "command": self.open_resonator_neighbor_dfrel_window})
         right_button_specs.append({"text": "Resonator df/f vs Time", "command": self.open_resonator_displacement_window})

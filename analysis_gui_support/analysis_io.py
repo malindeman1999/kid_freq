@@ -70,6 +70,10 @@ def _normalize_dataset(dataset: Dataset, dataset_path: Path) -> Dataset:
             scan.plot_group = None
         if not hasattr(scan, "file_timestamp"):
             scan.file_timestamp = ""
+        if not hasattr(scan, "temperature_mK"):
+            scan.temperature_mK = None
+        if not hasattr(scan, "bias_power_dBm"):
+            scan.bias_power_dBm = None
     _backfill_missing_vna_file_timestamps(dataset)
 
     # Backfill metadata from filename if possible: YYYYMMDD_HHMMSS_name.pkl

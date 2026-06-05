@@ -15,6 +15,8 @@ class VNAScan:
     freq: np.ndarray
     s21_complex_raw: np.ndarray
     file_timestamp: str = ""
+    temperature_mK: Optional[float] = None
+    bias_power_dBm: Optional[float] = None
     plot_group: Optional[int] = None
     s21_phase_deg_unwrapped: Optional[np.ndarray] = None
     source_dir: str = ""

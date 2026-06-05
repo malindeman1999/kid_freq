@@ -86,6 +86,34 @@ class ScanDateToolsMixin:
 
 
     @staticmethod
+    def _temperature_mk_from_filename(filename: str) -> Optional[float]:
+        name_text = Path(str(filename)).name.strip()
+        if not name_text:
+            return None
+        match = re.search(r"_(\d+(?:\.\d+)?)mK(?=$|[_\-.])", name_text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return float(match.group(1))
+        except Exception:
+            return None
+
+
+    @staticmethod
+    def _bias_power_dbm_from_filename(filename: str) -> Optional[float]:
+        name_text = Path(str(filename)).name.strip()
+        if not name_text:
+            return None
+        match = re.search(r"_a([+-]?\d+(?:\.\d+)?)\.npy$", name_text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return float(match.group(1))
+        except Exception:
+            return None
+
+
+    @staticmethod
     def _replace_iso_date_fixed_1pm(new_date_iso: str) -> str:
         return f"{new_date_iso}T13:00:00"
 
@@ -207,6 +235,190 @@ class ScanDateToolsMixin:
         messagebox.showinfo(
             "Dates updated",
             f"Updated {changed_count} selected scan date(s) from {info_mode_text}."
+            + (f"\nSkipped {len(skipped)} scan(s)." if skipped else ""),
+        )
+
+
+    def update_vna_temperatures_from_filenames(self) -> None:
+        scans = list(self.dataset.vna_scans)
+        if not scans:
+            messagebox.showwarning("No data", "No VNA scans are loaded in this dataset.")
+            return
+
+        proposed_updates: list[tuple[VNAScan, Optional[float], float]] = []
+        skipped: list[str] = []
+        for scan in scans:
+            temperature_mk = self._temperature_mk_from_filename(getattr(scan, "filename", ""))
+            if temperature_mk is None:
+                skipped.append(
+                    f"{self._scan_file_two_level_context(scan)}: "
+                    f"no _XXXmK token found in filename {Path(str(getattr(scan, 'filename', ''))).name}"
+                )
+                continue
+            old_temperature = getattr(scan, "temperature_mK", None)
+            try:
+                old_temperature_float = float(old_temperature) if old_temperature is not None else None
+            except Exception:
+                old_temperature_float = None
+            if old_temperature_float is not None and abs(old_temperature_float - temperature_mk) < 1.0e-12:
+                continue
+            proposed_updates.append((scan, old_temperature_float, temperature_mk))
+
+        if not proposed_updates:
+            message = "No VNA scan temperatures need updating from filename."
+            if skipped:
+                message += "\n\nSkipped:\n" + "\n".join(skipped[:10])
+            messagebox.showwarning("No updates", message)
+            return
+
+        def _format_temp(value: Optional[float]) -> str:
+            if value is None:
+                return "unset"
+            return f"{value:g} mK"
+
+        preview_lines = [
+            f"{self._scan_file_two_level_context(scan)}: {_format_temp(old)} -> {new:g} mK"
+            for scan, old, new in proposed_updates
+        ]
+        if skipped:
+            preview_lines.append("")
+            preview_lines.append("Skipped:")
+            preview_lines.extend(skipped[:10])
+            if len(skipped) > 10:
+                preview_lines.append(f"... and {len(skipped) - 10} more")
+
+        approved = self._confirm_bulk_text_changes(
+            "Update VNA Temperatures From Filename",
+            "The scans below will have temperature_mK updated from a filename token like _80mK.",
+            preview_lines,
+        )
+        if not approved:
+            return
+
+        for scan, old_temperature, new_temperature in proposed_updates:
+            scan.temperature_mK = float(new_temperature)
+            scan.processing_history.append(
+                _make_event(
+                    "update_vna_temperature_from_filename",
+                    {
+                        "filename": scan.filename,
+                        "old_temperature_mK": old_temperature,
+                        "new_temperature_mK": float(new_temperature),
+                    },
+                )
+            )
+
+        self.dataset.processing_history.append(
+            _make_event(
+                "update_vna_temperatures_from_filenames",
+                {
+                    "scan_count": len(scans),
+                    "updated_count": len(proposed_updates),
+                    "skipped_count": len(skipped),
+                },
+            )
+        )
+        self._mark_dirty()
+        self._refresh_status()
+        self._autosave_dataset()
+        self._log(
+            f"Updated VNA temperature_mK for {len(proposed_updates)} scan(s) from filename; skipped {len(skipped)}."
+        )
+        messagebox.showinfo(
+            "Temperatures updated",
+            f"Updated temperature_mK for {len(proposed_updates)} scan(s)."
+            + (f"\nSkipped {len(skipped)} scan(s)." if skipped else ""),
+        )
+
+
+    def update_vna_bias_powers_from_filenames(self) -> None:
+        scans = list(self.dataset.vna_scans)
+        if not scans:
+            messagebox.showwarning("No data", "No VNA scans are loaded in this dataset.")
+            return
+
+        proposed_updates: list[tuple[VNAScan, Optional[float], float]] = []
+        skipped: list[str] = []
+        for scan in scans:
+            bias_power_dbm = self._bias_power_dbm_from_filename(getattr(scan, "filename", ""))
+            if bias_power_dbm is None:
+                skipped.append(
+                    f"{self._scan_file_two_level_context(scan)}: "
+                    f"no _aXXX.npy bias-power token found in filename {Path(str(getattr(scan, 'filename', ''))).name}"
+                )
+                continue
+            old_power = getattr(scan, "bias_power_dBm", None)
+            try:
+                old_power_float = float(old_power) if old_power is not None else None
+            except Exception:
+                old_power_float = None
+            if old_power_float is not None and abs(old_power_float - bias_power_dbm) < 1.0e-12:
+                continue
+            proposed_updates.append((scan, old_power_float, bias_power_dbm))
+
+        if not proposed_updates:
+            message = "No VNA scan bias powers need updating from filename."
+            if skipped:
+                message += "\n\nSkipped:\n" + "\n".join(skipped[:10])
+            messagebox.showwarning("No updates", message)
+            return
+
+        def _format_power(value: Optional[float]) -> str:
+            if value is None:
+                return "unset"
+            return f"{value:g} dBm"
+
+        preview_lines = [
+            f"{self._scan_file_two_level_context(scan)}: {_format_power(old)} -> {new:g} dBm"
+            for scan, old, new in proposed_updates
+        ]
+        if skipped:
+            preview_lines.append("")
+            preview_lines.append("Skipped:")
+            preview_lines.extend(skipped[:10])
+            if len(skipped) > 10:
+                preview_lines.append(f"... and {len(skipped) - 10} more")
+
+        approved = self._confirm_bulk_text_changes(
+            "Update VNA Bias Powers From Filename",
+            "The scans below will have bias_power_dBm updated from a filename token like _a-44.npy.",
+            preview_lines,
+        )
+        if not approved:
+            return
+
+        for scan, old_power, new_power in proposed_updates:
+            scan.bias_power_dBm = float(new_power)
+            scan.processing_history.append(
+                _make_event(
+                    "update_vna_bias_power_from_filename",
+                    {
+                        "filename": scan.filename,
+                        "old_bias_power_dBm": old_power,
+                        "new_bias_power_dBm": float(new_power),
+                    },
+                )
+            )
+
+        self.dataset.processing_history.append(
+            _make_event(
+                "update_vna_bias_powers_from_filenames",
+                {
+                    "scan_count": len(scans),
+                    "updated_count": len(proposed_updates),
+                    "skipped_count": len(skipped),
+                },
+            )
+        )
+        self._mark_dirty()
+        self._refresh_status()
+        self._autosave_dataset()
+        self._log(
+            f"Updated VNA bias_power_dBm for {len(proposed_updates)} scan(s) from filename; skipped {len(skipped)}."
+        )
+        messagebox.showinfo(
+            "Bias powers updated",
+            f"Updated bias_power_dBm for {len(proposed_updates)} scan(s)."
             + (f"\nSkipped {len(skipped)} scan(s)." if skipped else ""),
         )
 

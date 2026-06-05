@@ -101,9 +101,25 @@ class ScanIOMixin:
         include_file_timestamp: bool = False,
         include_loaded_at: bool = False,
         include_group: bool = False,
+        include_temperature: bool = True,
     ) -> str:
         prefix = f"{int(index):03d} | " if index is not None else ""
         parts = [prefix + Path(str(scan.filename)).name, f"folder {self._scan_dialog_path_text(scan)}"]
+        if include_temperature:
+            temperature_mk = getattr(scan, "temperature_mK", None)
+            try:
+                temperature_text = f"{float(temperature_mk):g} mK" if temperature_mk is not None else ""
+            except Exception:
+                temperature_text = ""
+            if temperature_text:
+                parts.append(f"temp {temperature_text}")
+            bias_power_dbm = getattr(scan, "bias_power_dBm", None)
+            try:
+                bias_power_text = f"{float(bias_power_dbm):g} dBm" if bias_power_dbm is not None else ""
+            except Exception:
+                bias_power_text = ""
+            if bias_power_text:
+                parts.append(f"power {bias_power_text}")
         if include_file_timestamp:
             file_timestamp = str(getattr(scan, "file_timestamp", "")).strip() or "unknown"
             parts.append(f"file {file_timestamp}")
@@ -627,3 +643,56 @@ class ScanIOMixin:
         )
         tk.Button(btns, text="Cancel", command=selector.destroy).pack(side="right")
         tk.Button(btns, text="Clear Attachments", command=do_clear).pack(side="right", padx=(0, 8))
+
+
+    def clear_all_resonator_markers(self) -> None:
+        scans_with_markers = [
+            scan
+            for scan in self.dataset.vna_scans
+            if "sheet_resonances" in scan.candidate_resonators
+        ]
+        if not scans_with_markers:
+            messagebox.showinfo(
+                "No resonator markers",
+                "No attached resonator markers were found in the loaded dataset.",
+            )
+            return
+
+        names = [Path(scan.filename).name for scan in scans_with_markers]
+        ok = messagebox.askyesno(
+            "Confirm Clear",
+            f"Clear all attached resonator markers from {len(scans_with_markers)} scan(s)?\n\n"
+            + "\n".join(names[:10])
+            + ("\n..." if len(names) > 10 else ""),
+        )
+        if not ok:
+            return
+
+        cleared = 0
+        for scan in scans_with_markers:
+            scan.candidate_resonators.pop("sheet_resonances", None)
+            scan.processing_history.append(
+                _make_event(
+                    "clear_attached_resonator_markers",
+                    {"scan": scan.filename},
+                )
+            )
+            cleared += 1
+
+        self.dataset.processing_history.append(
+            _make_event(
+                "clear_all_attached_resonator_markers",
+                {
+                    "cleared_count": cleared,
+                    "filenames": [scan.filename for scan in scans_with_markers],
+                },
+            )
+        )
+        self._mark_dirty()
+        self._refresh_status()
+        self._autosave_dataset()
+        self._log(f"Cleared attached resonator markers from {cleared} scan(s).")
+        messagebox.showinfo(
+            "Resonator markers cleared",
+            f"Cleared attached resonator markers from {cleared} scan(s).",
+        )

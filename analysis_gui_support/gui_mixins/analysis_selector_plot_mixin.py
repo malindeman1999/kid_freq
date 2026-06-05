@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import fnmatch
 from pathlib import Path
 
 import numpy as np
@@ -38,11 +39,20 @@ class AnalysisSelectorPlotMixin:
 
         selector = tk.Toplevel(self.root)
         selector.title("Select VNA Scans for Analysis")
-        selector.geometry("760x360")
+        selector.geometry("820x420")
 
         tk.Label(selector, text="Choose scan(s) for analysis:").pack(
             anchor="w", padx=10, pady=(10, 4)
         )
+
+        filter_frame = tk.Frame(selector)
+        filter_frame.pack(fill="x", padx=10, pady=(0, 4))
+        tk.Label(filter_frame, text="File spec:").pack(side="left")
+        file_spec_var = tk.StringVar()
+        file_spec_entry = tk.Entry(filter_frame, textvariable=file_spec_var, width=44)
+        file_spec_entry.pack(side="left", padx=(6, 8))
+        filter_status_var = tk.StringVar()
+        tk.Label(filter_frame, textvariable=filter_status_var, anchor="w").pack(side="left", fill="x", expand=True)
 
         listbox = tk.Listbox(selector, width=120, height=14, selectmode=tk.EXTENDED)
         listbox.pack(fill="both", expand=True, padx=10, pady=4)
@@ -50,6 +60,7 @@ class AnalysisSelectorPlotMixin:
         key_to_index: dict[str, int] = {}
         key_to_label: dict[str, str] = {}
         selected_keys = set(self.dataset.selected_scan_keys)
+        visible_scan_indices: list[int] = []
         for idx, scan in enumerate(self.dataset.vna_scans):
             scan_key = self._scan_key(scan)
             label = self._scan_dialog_label(
@@ -59,11 +70,52 @@ class AnalysisSelectorPlotMixin:
                 include_loaded_at=True,
                 include_group=True,
             )
-            listbox.insert(tk.END, label)
             key_to_index[scan_key] = idx
             key_to_label[scan_key] = label
-            if scan_key in selected_keys:
-                listbox.selection_set(idx)
+
+        def _scan_matches_file_spec(scan: object, label: str, spec: str) -> bool:
+            spec = str(spec or "").strip()
+            if not spec:
+                return True
+            filename = Path(str(getattr(scan, "filename", ""))).name
+            full_text = f"{filename} {getattr(scan, 'filename', '')} {label}".lower()
+            pattern = spec.lower()
+            if "*" in pattern or "?" in pattern:
+                return (
+                    fnmatch.fnmatch(filename.lower(), pattern)
+                    or fnmatch.fnmatch(str(getattr(scan, "filename", "")).lower(), pattern)
+                    or fnmatch.fnmatch(label.lower(), pattern)
+                )
+            return pattern in full_text
+
+        def _sync_visible_selection_to_keys() -> None:
+            visible_selected = {int(i) for i in listbox.curselection()}
+            for list_idx, scan_idx in enumerate(visible_scan_indices):
+                scan_key = self._scan_key(self.dataset.vna_scans[scan_idx])
+                if list_idx in visible_selected:
+                    selected_keys.add(scan_key)
+                else:
+                    selected_keys.discard(scan_key)
+
+        def _refresh_scan_list(*, preserve_visible_selection: bool = True) -> None:
+            if preserve_visible_selection:
+                _sync_visible_selection_to_keys()
+            spec = str(file_spec_var.get() or "").strip()
+            visible_scan_indices.clear()
+            listbox.delete(0, tk.END)
+            for idx, scan in enumerate(self.dataset.vna_scans):
+                scan_key = self._scan_key(scan)
+                label = key_to_label[scan_key]
+                if not _scan_matches_file_spec(scan, label, spec):
+                    continue
+                visible_scan_indices.append(idx)
+                listbox.insert(tk.END, label)
+                if scan_key in selected_keys:
+                    listbox.selection_set(tk.END)
+            filter_status_var.set(
+                f"Showing {len(visible_scan_indices)} of {len(self.dataset.vna_scans)} scans; "
+                f"{len(selected_keys)} selected."
+            )
 
         preset_var = tk.StringVar()
         preset_frame = tk.Frame(selector)
@@ -93,9 +145,15 @@ class AnalysisSelectorPlotMixin:
                 preset_var.set("")
 
         def _selected_indices() -> tuple[int, ...]:
-            return tuple(int(i) for i in listbox.curselection())
+            _sync_visible_selection_to_keys()
+            return tuple(
+                idx
+                for idx, scan in enumerate(self.dataset.vna_scans)
+                if self._scan_key(scan) in selected_keys
+            )
 
         def _load_saved_selection() -> None:
+            _sync_visible_selection_to_keys()
             preset_name = str(preset_var.get()).strip()
             saved = self._saved_scan_selections()
             scan_keys = saved.get(preset_name)
@@ -112,10 +170,15 @@ class AnalysisSelectorPlotMixin:
                     missing_labels.append(key_to_label.get(str(scan_key), str(scan_key)))
                     continue
                 present_indices.append(idx)
-            listbox.selection_clear(0, tk.END)
-            for idx in present_indices:
-                listbox.selection_set(idx)
-                listbox.see(idx)
+            selected_keys.clear()
+            selected_keys.update(
+                self._scan_key(self.dataset.vna_scans[idx]) for idx in present_indices
+            )
+            _refresh_scan_list(preserve_visible_selection=False)
+            for list_idx, scan_idx in enumerate(visible_scan_indices):
+                if scan_idx in present_indices:
+                    listbox.see(list_idx)
+                    break
             if missing_labels:
                 if present_indices:
                     message = (
@@ -188,7 +251,7 @@ class AnalysisSelectorPlotMixin:
             _refresh_preset_choices()
 
         def apply_selection() -> None:
-            indices = listbox.curselection()
+            indices = _selected_indices()
             self.dataset.selected_scan_keys = [
                 self._scan_key(self.dataset.vna_scans[i]) for i in indices
             ]
@@ -198,12 +261,31 @@ class AnalysisSelectorPlotMixin:
             self._autosave_dataset()
             selector.destroy()
 
+        def _select_visible() -> None:
+            listbox.select_set(0, tk.END)
+            _sync_visible_selection_to_keys()
+            filter_status_var.set(
+                f"Showing {len(visible_scan_indices)} of {len(self.dataset.vna_scans)} scans; "
+                f"{len(selected_keys)} selected."
+            )
+
+        def _clear_visible() -> None:
+            listbox.selection_clear(0, tk.END)
+            _sync_visible_selection_to_keys()
+            filter_status_var.set(
+                f"Showing {len(visible_scan_indices)} of {len(self.dataset.vna_scans)} scans; "
+                f"{len(selected_keys)} selected."
+            )
+
+        file_spec_var.trace_add("write", lambda *_args: _refresh_scan_list())
+        listbox.bind("<<ListboxSelect>>", lambda _event: _sync_visible_selection_to_keys())
+
         button_frame = tk.Frame(selector)
         button_frame.pack(fill="x", padx=10, pady=(2, 10))
-        tk.Button(button_frame, text="Select All", command=lambda: listbox.select_set(0, tk.END)).pack(
+        tk.Button(button_frame, text="Select Visible", command=_select_visible).pack(
             side="left"
         )
-        tk.Button(button_frame, text="Clear All", command=lambda: listbox.selection_clear(0, tk.END)).pack(
+        tk.Button(button_frame, text="Clear Visible", command=_clear_visible).pack(
             side="left", padx=(6, 0)
         )
         tk.Button(button_frame, text="Save Current As...", command=_save_current_selection).pack(
@@ -217,6 +299,8 @@ class AnalysisSelectorPlotMixin:
         )
         tk.Button(button_frame, text="Apply Selection", command=apply_selection).pack(side="right")
         _refresh_preset_choices()
+        _refresh_scan_list(preserve_visible_selection=False)
+        file_spec_entry.focus_set()
 
     def plot_selected_vna_scans(self) -> None:
         if not self.dataset.vna_scans:

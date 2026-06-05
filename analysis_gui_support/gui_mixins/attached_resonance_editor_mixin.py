@@ -146,6 +146,12 @@ class AttachedResonanceEditorMixin:
         ).pack(side="left", padx=(0, 8))
         tk.Button(
             action_controls,
+            text="Delete # Everywhere",
+            width=18,
+            command=self._attached_resonance_editor_delete_selected_number_everywhere,
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            action_controls,
             text="Clear Sel. Scan Markers",
             width=20,
             command=self._attached_resonance_editor_clear_selected_scan_markers,
@@ -1348,6 +1354,79 @@ class AttachedResonanceEditorMixin:
             if self.attached_res_edit_canvas is not None:
                 self.attached_res_edit_canvas.draw_idle()
             return
+        self._attached_resonance_editor_redraw_overlay()
+
+
+    def _attached_resonance_editor_delete_selected_number_everywhere(self) -> None:
+        if self._attached_res_edit_selected is None:
+            if self.attached_res_edit_status_var is not None:
+                self.attached_res_edit_status_var.set("No resonator selected to delete from all scans.")
+            return
+
+        _selected_scan_key, resonator_number = self._attached_res_edit_selected
+        resonator_number = str(resonator_number).strip()
+        scans_with_number = []
+        for scan in self.dataset.vna_scans:
+            payload = scan.candidate_resonators.get("sheet_resonances")
+            assignments = payload.get("assignments") if isinstance(payload, dict) else {}
+            if isinstance(assignments, dict) and resonator_number in assignments:
+                scans_with_number.append(scan)
+
+        if not scans_with_number:
+            if self.attached_res_edit_status_var is not None:
+                self.attached_res_edit_status_var.set(f"Resonator {resonator_number} was not found on any scan.")
+            self._attached_res_edit_selected = None
+            self._attached_resonance_editor_redraw_overlay()
+            return
+
+        names = [Path(str(scan.filename)).name for scan in scans_with_number]
+        ok = messagebox.askyesno(
+            "Delete Resonator Number Everywhere",
+            f"Delete all references to resonator {resonator_number} from {len(scans_with_number)} scan(s)?\n\n"
+            + "\n".join(names[:10])
+            + ("\n..." if len(names) > 10 else ""),
+            parent=self.attached_res_edit_window,
+        )
+        if not ok:
+            return
+
+        self._attached_resonance_editor_push_undo_snapshot(
+            scan_keys={self._scan_key(scan) for scan in scans_with_number}
+        )
+        deleted = 0
+        for scan in scans_with_number:
+            payload = scan.candidate_resonators.get("sheet_resonances")
+            assignments = payload.get("assignments") if isinstance(payload, dict) else {}
+            if not isinstance(assignments, dict) or resonator_number not in assignments:
+                continue
+            assignments.pop(resonator_number, None)
+            if not assignments:
+                scan.candidate_resonators.pop("sheet_resonances", None)
+            scan.processing_history.append(
+                _make_event(
+                    "delete_attached_resonator_number_everywhere",
+                    {"scan": scan.filename, "resonator_number": resonator_number},
+                )
+            )
+            deleted += 1
+
+        self.dataset.processing_history.append(
+            _make_event(
+                "delete_attached_resonator_number_everywhere",
+                {
+                    "resonator_number": resonator_number,
+                    "deleted_count": deleted,
+                    "filenames": [scan.filename for scan in scans_with_number],
+                },
+            )
+        )
+        self._attached_res_edit_selected = None
+        self._attached_res_edit_changed = True
+        self._attached_resonance_editor_reset_working_number()
+        if self.attached_res_edit_status_var is not None:
+            self.attached_res_edit_status_var.set(
+                f"Deleted resonator {resonator_number} from {deleted} scan(s)."
+            )
         self._attached_resonance_editor_redraw_overlay()
 
 

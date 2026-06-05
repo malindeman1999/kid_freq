@@ -60,6 +60,20 @@ class ResonatorDisplacementWindowMixin:
             variable=self.res_displacement_xaxis_mode_var,
             command=self._render_resonator_displacement_window,
         ).pack(side="left", padx=(0, 8))
+        tk.Radiobutton(
+            control_row,
+            text="Temperature",
+            value="temperature",
+            variable=self.res_displacement_xaxis_mode_var,
+            command=self._render_resonator_displacement_window,
+        ).pack(side="left", padx=(0, 8))
+        tk.Radiobutton(
+            control_row,
+            text="Bias Power",
+            value="power",
+            variable=self.res_displacement_xaxis_mode_var,
+            command=self._render_resonator_displacement_window,
+        ).pack(side="left", padx=(0, 8))
         tk.Button(control_row, text="Refresh", width=10, command=self._render_resonator_displacement_window).pack(
             side="left",
             padx=(0, 8),
@@ -143,6 +157,8 @@ class ResonatorDisplacementWindowMixin:
                 points.append(
                     {
                         "elapsed_days": elapsed_days,
+                        "temperature_mK": test.get("temperature_mK"),
+                        "bias_power_dBm": test.get("bias_power_dBm"),
                         "freq_hz": freq_hz,
                         "test_label": str(test.get("label", "")),
                     }
@@ -215,34 +231,89 @@ class ResonatorDisplacementWindowMixin:
             if self.res_displacement_xaxis_mode_var is not None
             else "elapsed"
         ).strip().lower()
+        if xaxis_mode not in {"elapsed", "date", "temperature", "power"}:
+            xaxis_mode = "elapsed"
+        x_key = (
+            "temperature_mK"
+            if xaxis_mode == "temperature"
+            else "bias_power_dBm"
+            if xaxis_mode == "power"
+            else "elapsed_days"
+        )
 
-        values_by_time: dict[float, list[float]] = {}
+        if xaxis_mode == "temperature":
+            missing_temperature = [
+                str(test.get("label", test.get("detail_label", "unknown scan")))
+                for test in state["tests"]
+                if test.get("temperature_mK") is None or bool(test.get("missing_temperature", False))
+            ]
+            if missing_temperature:
+                message = (
+                    "Temperature x-axis requires every selected VNA scan in the plotted test units "
+                    "to have temperature_mK assigned. Missing temperature for: "
+                    + ", ".join(missing_temperature[:8])
+                    + (f", ... (+{len(missing_temperature) - 8} more)" if len(missing_temperature) > 8 else "")
+                )
+                ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes, wrap=True)
+                ax.set_axis_off()
+                if self.res_displacement_status_var is not None:
+                    self.res_displacement_status_var.set(message)
+                self.res_displacement_canvas.draw_idle()
+                return
+        if xaxis_mode == "power":
+            missing_power = [
+                str(test.get("label", test.get("detail_label", "unknown scan")))
+                for test in state["tests"]
+                if test.get("bias_power_dBm") is None or bool(test.get("missing_bias_power", False))
+            ]
+            if missing_power:
+                message = (
+                    "Bias-power x-axis requires every selected VNA scan in the plotted test units "
+                    "to have bias_power_dBm assigned. Missing bias power for: "
+                    + ", ".join(missing_power[:8])
+                    + (f", ... (+{len(missing_power) - 8} more)" if len(missing_power) > 8 else "")
+                )
+                ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes, wrap=True)
+                ax.set_axis_off()
+                if self.res_displacement_status_var is not None:
+                    self.res_displacement_status_var.set(message)
+                self.res_displacement_canvas.draw_idle()
+                return
+
+        def _plot_x(point: dict) -> float:
+            try:
+                return float(point.get(x_key, np.nan))
+            except Exception:
+                return np.nan
+
+        values_by_x: dict[float, list[float]] = {}
         for series in resonator_series:
-            x = np.asarray([float(pt["elapsed_days"]) for pt in series["points"]], dtype=float)
-            y = np.asarray([float(pt["df_over_f0"]) for pt in series["points"]], dtype=float)
+            points = sorted(series["points"], key=_plot_x)
+            x = np.asarray([_plot_x(pt) for pt in points], dtype=float)
+            y = np.asarray([float(pt["df_over_f0"]) for pt in points], dtype=float)
             ax.plot(x, y, color=series["color"], linewidth=1.4, alpha=0.9, marker="o", markersize=3.5, zorder=3.0)
             for x_val, y_val in zip(x, y):
                 if np.isfinite(x_val) and np.isfinite(y_val):
-                    values_by_time.setdefault(float(x_val), []).append(float(y_val))
+                    values_by_x.setdefault(float(x_val), []).append(float(y_val))
 
         summary_x: list[float] = []
         summary_mean: list[float] = []
         summary_low: list[float] = []
         summary_high: list[float] = []
         final_displacements: list[float] = []
-        for elapsed_days in sorted(values_by_time):
-            arr = np.asarray(values_by_time[elapsed_days], dtype=float)
+        for x_value in sorted(values_by_x):
+            arr = np.asarray(values_by_x[x_value], dtype=float)
             arr = arr[np.isfinite(arr)]
             if arr.size == 0:
                 continue
             mean_value = float(np.mean(arr))
             std_value = float(np.std(arr))
-            summary_x.append(float(elapsed_days))
+            summary_x.append(float(x_value))
             summary_mean.append(mean_value)
             summary_low.append(mean_value - std_value)
             summary_high.append(mean_value + std_value)
         for series in resonator_series:
-            points = list(series.get("points", []))
+            points = sorted(series.get("points", []), key=_plot_x)
             if not points:
                 continue
             y_final = float(points[-1].get("df_over_f0", np.nan))
@@ -285,10 +356,20 @@ class ResonatorDisplacementWindowMixin:
                 )
             )
             ax.tick_params(axis="x", labelrotation=30)
+        elif xaxis_mode == "temperature":
+            ax.set_xlabel("Temperature (mK)")
+        elif xaxis_mode == "power":
+            ax.set_xlabel("Bias Power (dBm)")
         else:
             ax.set_xlabel("Elapsed Time (days)")
         ax.set_ylabel("Relative Displacement (f - f0) / f0")
-        ax.set_title("Marked Resonator Relative Displacement vs Time")
+        ax.set_title(
+            "Marked Resonator Relative Displacement vs Temperature"
+            if xaxis_mode == "temperature"
+            else "Marked Resonator Relative Displacement vs Bias Power"
+            if xaxis_mode == "power"
+            else "Marked Resonator Relative Displacement vs Time"
+        )
         mean_shift_label = (
             f"Mean net shift (final points): {mean_net_shift:+.3e} df/f"
             if np.isfinite(mean_net_shift)
@@ -314,7 +395,13 @@ class ResonatorDisplacementWindowMixin:
         self.res_displacement_figure.tight_layout()
         if self.res_displacement_status_var is not None:
             origin_text = origin_dt.strftime("%Y-%m-%d") if isinstance(origin_dt, datetime) else "unknown"
+            if xaxis_mode == "temperature":
+                origin_prefix = "X-axis: VNA temperature_mK. "
+            elif xaxis_mode == "power":
+                origin_prefix = "X-axis: VNA bias_power_dBm. "
+            else:
+                origin_prefix = f"Elapsed-time origin: {origin_text}. "
             self.res_displacement_status_var.set(
-                f"Elapsed-time origin: {origin_text}. Showing {len(resonator_series)} resonator curve(s) from {len(state['tests'])} selected test unit(s); mean net shift (final points) = {mean_net_shift:+.3e} df/f. Grey band is mean +/- 1 std and black curve is mean."
+                f"{origin_prefix}Showing {len(resonator_series)} resonator curve(s) from {len(state['tests'])} selected test unit(s); mean net shift (final points) = {mean_net_shift:+.3e} df/f. Grey band is mean +/- 1 std and black curve is mean."
             )
         self.res_displacement_canvas.draw_idle()

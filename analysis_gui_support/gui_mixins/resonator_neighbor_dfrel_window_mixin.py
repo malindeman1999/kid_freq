@@ -107,6 +107,20 @@ class ResonatorNeighborDfrelWindowMixin:
             variable=self.res_neighbor_dfrel_xaxis_mode_var,
             command=self._render_resonator_neighbor_dfrel_window,
         ).pack(side="left", padx=(0, 8))
+        tk.Radiobutton(
+            control_row,
+            text="Temperature",
+            value="temperature",
+            variable=self.res_neighbor_dfrel_xaxis_mode_var,
+            command=self._render_resonator_neighbor_dfrel_window,
+        ).pack(side="left", padx=(0, 8))
+        tk.Radiobutton(
+            control_row,
+            text="Bias Power",
+            value="power",
+            variable=self.res_neighbor_dfrel_xaxis_mode_var,
+            command=self._render_resonator_neighbor_dfrel_window,
+        ).pack(side="left", padx=(0, 8))
         tk.Checkbutton(
             control_row,
             text="Summary Band",
@@ -253,12 +267,52 @@ class ResonatorNeighborDfrelWindowMixin:
             if self.res_neighbor_dfrel_mode_var is not None
             else "drift"
         ).strip().lower()
+        xaxis_mode = (
+            str(self.res_neighbor_dfrel_xaxis_mode_var.get())
+            if self.res_neighbor_dfrel_xaxis_mode_var is not None
+            else "elapsed"
+        ).strip().lower()
+        if xaxis_mode not in {"elapsed", "date", "temperature", "power"}:
+            xaxis_mode = "elapsed"
+        x_key = (
+            "temperature_mK"
+            if xaxis_mode == "temperature"
+            else "bias_power_dBm"
+            if xaxis_mode == "power"
+            else "elapsed_days"
+        )
         overlay_state = self._resonator_neighbor_scan_overlay_state(
             threshold_rel,
             initial_date_text=initial_date_text,
         )
-        pair_series = self._resonator_neighbor_plot_series(overlay_state["data"]["pair_series"], mode)
-        drift_series = self._resonator_neighbor_drift_rate_series(pair_series)
+        if xaxis_mode == "temperature":
+            missing_temperature = [
+                str(test.get("label", test.get("detail_label", "unknown scan")))
+                for test in overlay_state["data"]["tests"]
+                if test.get("temperature_mK") is None or bool(test.get("missing_temperature", False))
+            ]
+            if missing_temperature:
+                raise ValueError(
+                    "Temperature rates require every selected VNA scan in the plotted test units "
+                    "to have temperature_mK assigned. Missing temperature for: "
+                    + ", ".join(missing_temperature[:8])
+                    + (f", ... (+{len(missing_temperature) - 8} more)" if len(missing_temperature) > 8 else "")
+                )
+        if xaxis_mode == "power":
+            missing_power = [
+                str(test.get("label", test.get("detail_label", "unknown scan")))
+                for test in overlay_state["data"]["tests"]
+                if test.get("bias_power_dBm") is None or bool(test.get("missing_bias_power", False))
+            ]
+            if missing_power:
+                raise ValueError(
+                    "Bias-power rates require every selected VNA scan in the plotted test units "
+                    "to have bias_power_dBm assigned. Missing bias power for: "
+                    + ", ".join(missing_power[:8])
+                    + (f", ... (+{len(missing_power) - 8} more)" if len(missing_power) > 8 else "")
+                )
+        pair_series = self._resonator_neighbor_plot_series(overlay_state["data"]["pair_series"], mode, x_key=x_key)
+        drift_series = self._resonator_neighbor_drift_rate_series(pair_series, x_key=x_key)
         rows: list[dict] = []
         for pair in drift_series:
             points = list(pair.get("points", []))
@@ -275,13 +329,18 @@ class ResonatorNeighborDfrelWindowMixin:
                 end_label = str(end_point.get("test_label", "")).strip()
                 start_date = start_label.split("|", 1)[0].strip() if start_label else "unknown date"
                 end_date = end_label.split("|", 1)[0].strip() if end_label else "unknown date"
-                delta_days = float(end_point.get("elapsed_days", np.nan) - start_point.get("elapsed_days", np.nan))
+                start_x = float(start_point.get(x_key, np.nan))
+                end_x = float(end_point.get(x_key, np.nan))
+                delta_x = end_x - start_x
                 rows.append(
                     {
                         "pair_label": str(pair.get("label", "")),
                         "start_date": start_date,
                         "end_date": end_date,
-                        "delta_days": delta_days,
+                        "start_x": start_x,
+                        "end_x": end_x,
+                        "delta_x": delta_x,
+                        "xaxis_mode": xaxis_mode,
                         "rate": rate,
                         "abs_rate": abs(rate),
                     }
@@ -304,23 +363,47 @@ class ResonatorNeighborDfrelWindowMixin:
                 self.res_neighbor_top_rates_status_var.set(str(exc))
             return
 
-        header = (
-            f"{'Rank':>4}  {'Pair':<14}  {'Start Date':<12}  {'End Date':<12}  {'Delta Days':>10}  {'Rate (df/f/day)':>16}\n"
-        )
+        xaxis_mode = (
+            str(self.res_neighbor_dfrel_xaxis_mode_var.get())
+            if self.res_neighbor_dfrel_xaxis_mode_var is not None
+            else "elapsed"
+        ).strip().lower()
+        is_temp = xaxis_mode == "temperature"
+        is_power = xaxis_mode == "power"
+        if is_temp:
+            header = (
+                f"{'Rank':>4}  {'Pair':<14}  {'Start mK':>10}  {'End mK':>10}  {'Delta mK':>10}  {'Rate (df/f/mK)':>16}\n"
+            )
+        elif is_power:
+            header = (
+                f"{'Rank':>4}  {'Pair':<14}  {'Start dBm':>10}  {'End dBm':>10}  {'Delta dBm':>10}  {'Rate (df/f/dBm)':>16}\n"
+            )
+        else:
+            header = (
+                f"{'Rank':>4}  {'Pair':<14}  {'Start Date':<12}  {'End Date':<12}  {'Delta Days':>10}  {'Rate (df/f/day)':>16}\n"
+            )
         self.res_neighbor_top_rates_text.insert("end", header)
         self.res_neighbor_top_rates_text.insert("end", "-" * 82 + "\n")
         for rank, row in enumerate(rows, start=1):
-            self.res_neighbor_top_rates_text.insert(
-                "end",
-                (
+            if is_temp or is_power:
+                line = (
+                    f"{rank:>4d}  "
+                    f"{str(row['pair_label']):<14}  "
+                    f"{float(row['start_x']):>10.3f}  "
+                    f"{float(row['end_x']):>10.3f}  "
+                    f"{float(row['delta_x']):>10.3f}  "
+                    f"{float(row['rate']):>+16.6e}\n"
+                )
+            else:
+                line = (
                     f"{rank:>4d}  "
                     f"{str(row['pair_label']):<14}  "
                     f"{str(row['start_date']):<12}  "
                     f"{str(row['end_date']):<12}  "
-                    f"{float(row['delta_days']):>10.3f}  "
+                    f"{float(row['delta_x']):>10.3f}  "
                     f"{float(row['rate']):>+16.6e}\n"
-                ),
-            )
+                )
+            self.res_neighbor_top_rates_text.insert("end", line)
         self.res_neighbor_top_rates_text.configure(state="disabled")
 
         if self.res_neighbor_top_rates_status_var is not None:
@@ -330,7 +413,7 @@ class ResonatorNeighborDfrelWindowMixin:
                 else "drift"
             ).strip().lower()
             self.res_neighbor_top_rates_status_var.set(
-                f"Showing top {len(rows)} of {int(total_count)} neighboring pair interval rate(s), sorted by |rate| descending (mode: {mode})."
+                f"Showing top {len(rows)} of {int(total_count)} neighboring pair interval rate(s), sorted by |rate| descending (mode: {mode}, x-axis: {'temperature' if is_temp else 'bias power' if is_power else 'time'})."
             )
 
 
@@ -372,21 +455,81 @@ class ResonatorNeighborDfrelWindowMixin:
             if self.res_neighbor_dfrel_mode_var is not None
             else "change"
         ).strip().lower()
-        pair_series = self._resonator_neighbor_plot_series(data["pair_series"], mode)
+        xaxis_mode = (
+            str(self.res_neighbor_dfrel_xaxis_mode_var.get())
+            if self.res_neighbor_dfrel_xaxis_mode_var is not None
+            else "elapsed"
+        ).strip().lower()
+        if xaxis_mode not in {"elapsed", "date", "temperature", "power"}:
+            xaxis_mode = "elapsed"
+        x_key = (
+            "temperature_mK"
+            if xaxis_mode == "temperature"
+            else "bias_power_dBm"
+            if xaxis_mode == "power"
+            else "elapsed_days"
+        )
         mean_pair_freqs_hz = np.asarray(data["mean_pair_freqs_hz"], dtype=float)
         norm = overlay_state["norm"]
         cmap = overlay_state["cmap"]
         vmin = float(norm.vmin)
         vmax = float(norm.vmax)
         show_iqr = bool(self.res_neighbor_dfrel_show_iqr_var.get()) if self.res_neighbor_dfrel_show_iqr_var is not None else True
-        xaxis_mode = (
-            str(self.res_neighbor_dfrel_xaxis_mode_var.get())
-            if self.res_neighbor_dfrel_xaxis_mode_var is not None
-            else "elapsed"
-        ).strip().lower()
-        displacement_pair_series = self._resonator_neighbor_plot_series(data["pair_series"], "change")
+        if xaxis_mode == "temperature":
+            missing_temperature = [
+                str(test.get("label", test.get("detail_label", "unknown scan")))
+                for test in data["tests"]
+                if test.get("temperature_mK") is None or bool(test.get("missing_temperature", False))
+            ]
+            if missing_temperature:
+                message = (
+                    "Temperature x-axis requires every selected VNA scan in the plotted test units "
+                    "to have temperature_mK assigned. Missing temperature for: "
+                    + ", ".join(missing_temperature[:8])
+                    + (f", ... (+{len(missing_temperature) - 8} more)" if len(missing_temperature) > 8 else "")
+                )
+                ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes, wrap=True)
+                ax.set_axis_off()
+                if self.res_neighbor_dfrel_status_var is not None:
+                    self.res_neighbor_dfrel_status_var.set(message)
+                self.res_neighbor_dfrel_canvas.draw_idle()
+                return
+        if xaxis_mode == "power":
+            missing_power = [
+                str(test.get("label", test.get("detail_label", "unknown scan")))
+                for test in data["tests"]
+                if test.get("bias_power_dBm") is None or bool(test.get("missing_bias_power", False))
+            ]
+            if missing_power:
+                message = (
+                    "Bias-power x-axis requires every selected VNA scan in the plotted test units "
+                    "to have bias_power_dBm assigned. Missing bias power for: "
+                    + ", ".join(missing_power[:8])
+                    + (f", ... (+{len(missing_power) - 8} more)" if len(missing_power) > 8 else "")
+                )
+                ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes, wrap=True)
+                ax.set_axis_off()
+                if self.res_neighbor_dfrel_status_var is not None:
+                    self.res_neighbor_dfrel_status_var.set(message)
+                self.res_neighbor_dfrel_canvas.draw_idle()
+                return
+        pair_series = self._resonator_neighbor_plot_series(data["pair_series"], mode, x_key=x_key)
+
+        def _plot_x(point: dict) -> float:
+            if xaxis_mode == "temperature":
+                return float(point.get("temperature_mK", np.nan))
+            if xaxis_mode == "power":
+                return float(point.get("bias_power_dBm", np.nan))
+            return float(point.get("elapsed_days", np.nan))
+
+        def _plot_x_array(points: list[dict], key: str | None = None) -> np.ndarray:
+            if key is not None:
+                return np.asarray([float(item.get(key, np.nan)) for item in points], dtype=float)
+            return np.asarray([_plot_x(item) for item in points], dtype=float)
+
+        displacement_pair_series = self._resonator_neighbor_plot_series(data["pair_series"], "change", x_key=x_key)
         final_displacements: list[float] = []
-        all_elapsed_days: list[float] = []
+        all_x_values: list[float] = []
         for pair in displacement_pair_series:
             points = pair.get("points", [])
             if not points:
@@ -396,24 +539,24 @@ class ResonatorNeighborDfrelWindowMixin:
             if np.isfinite(y_final):
                 final_displacements.append(y_final)
             for point in points:
-                x_value = float(point.get("elapsed_days", np.nan))
+                x_value = _plot_x(point)
                 if np.isfinite(x_value):
-                    all_elapsed_days.append(x_value)
+                    all_x_values.append(x_value)
         net_std = float(np.std(np.asarray(final_displacements, dtype=float))) if final_displacements else np.nan
-        elapsed_days = (
-            float(np.max(np.asarray(all_elapsed_days, dtype=float)) - np.min(np.asarray(all_elapsed_days, dtype=float)))
-            if all_elapsed_days
+        x_span = (
+            float(np.max(np.asarray(all_x_values, dtype=float)) - np.min(np.asarray(all_x_values, dtype=float)))
+            if all_x_values
             else np.nan
         )
-        net_drift_rate = (net_std / elapsed_days) if np.isfinite(net_std) and np.isfinite(elapsed_days) and elapsed_days > 0.0 else np.nan
+        net_drift_rate = (net_std / x_span) if np.isfinite(net_std) and np.isfinite(x_span) and x_span > 0.0 else np.nan
 
         summary = []
         drift_single_interval_xlim: Optional[tuple[float, float]] = None
         if mode == "drift":
-            summary = self._resonator_neighbor_drift_rate_summary(pair_series)
-            drift_series = self._resonator_neighbor_drift_rate_series(pair_series)
+            summary = self._resonator_neighbor_drift_rate_summary(pair_series, x_key=x_key)
+            drift_series = self._resonator_neighbor_drift_rate_series(pair_series, x_key=x_key)
             if summary:
-                x_summary = np.asarray([float(item["elapsed_days"]) for item in summary], dtype=float)
+                x_summary = _plot_x_array(summary)
                 lower_summary = np.asarray([float(item["lower"]) for item in summary], dtype=float)
                 upper_summary = np.asarray([float(item["upper"]) for item in summary], dtype=float)
                 if show_iqr:
@@ -483,7 +626,7 @@ class ResonatorNeighborDfrelWindowMixin:
                         drift_single_interval_xlim = (x0 - 5.0, x0 + 5.0)
             for pair in drift_series:
                 color = pair["color"]
-                x = np.asarray([float(pt["elapsed_days"]) for pt in pair["drift_points"]], dtype=float)
+                x = _plot_x_array(pair["drift_points"])
                 y = np.asarray([float(pt["drift_rate"]) for pt in pair["drift_points"]], dtype=float)
                 ax.plot(
                     x,
@@ -496,9 +639,9 @@ class ResonatorNeighborDfrelWindowMixin:
                     zorder=4.0,
                 )
         else:
-            summary = self._resonator_neighbor_summary_by_time(pair_series)
+            summary = self._resonator_neighbor_summary_by_time(pair_series, x_key=x_key)
             if show_iqr and summary:
-                x_summary = np.asarray([float(item["elapsed_days"]) for item in summary], dtype=float)
+                x_summary = _plot_x_array(summary)
                 lower = np.asarray([float(item["lower"]) for item in summary], dtype=float)
                 upper = np.asarray([float(item["upper"]) for item in summary], dtype=float)
                 q1 = np.asarray([float(item["q1"]) for item in summary], dtype=float)
@@ -552,7 +695,7 @@ class ResonatorNeighborDfrelWindowMixin:
 
             for pair in pair_series:
                 color = pair["color"]
-                x = np.asarray([float(pt["elapsed_days"]) for pt in pair["points"]], dtype=float)
+                x = _plot_x_array(pair["points"])
                 y = np.asarray([float(pt.get("plot_df_over_f", pt["df_over_f"])) for pt in pair["points"]], dtype=float)
                 ax.plot(
                     x,
@@ -577,16 +720,34 @@ class ResonatorNeighborDfrelWindowMixin:
                 )
             )
             ax.tick_params(axis="x", labelrotation=30)
+        elif xaxis_mode == "temperature":
+            ax.set_xlabel("Temperature (mK)")
+        elif xaxis_mode == "power":
+            ax.set_xlabel("Bias Power (dBm)")
         else:
             ax.set_xlabel("Elapsed Time (days)")
         if mode == "drift":
-            ax.set_ylabel("Neighbor Pair Gap Drift Rate (df/f per day)")
-            ax.set_title("Neighbor Pair Gap Drift Rate vs Time")
+            rate_unit = "mK" if xaxis_mode == "temperature" else "dBm" if xaxis_mode == "power" else "day"
+            span_label = (
+                "temperature span"
+                if xaxis_mode == "temperature"
+                else "bias-power span"
+                if xaxis_mode == "power"
+                else "elapsed days"
+            )
+            ax.set_ylabel(f"Neighbor Pair Gap Drift Rate (df/f per {rate_unit})")
+            ax.set_title(
+                "Neighbor Pair Gap Drift Rate vs Temperature"
+                if xaxis_mode == "temperature"
+                else "Neighbor Pair Gap Drift Rate vs Bias Power"
+                if xaxis_mode == "power"
+                else "Neighbor Pair Gap Drift Rate vs Time"
+            )
             drift_label = (
-                f"Drift rate = NET STD / elapsed days\n"
-                f"= {net_std:.3e} / {elapsed_days:.3f} = {net_drift_rate:.3e} df/f/day"
+                f"Drift rate = NET STD / {span_label}\n"
+                f"= {net_std:.3e} / {x_span:.3f} = {net_drift_rate:.3e} df/f/{rate_unit}"
                 if np.isfinite(net_drift_rate)
-                else "Drift rate = NET STD / elapsed days: n/a"
+                else f"Drift rate = NET STD / {span_label}: n/a"
             )
             ax.text(
                 0.02,
@@ -600,7 +761,13 @@ class ResonatorNeighborDfrelWindowMixin:
             )
         elif mode == "change":
             ax.set_ylabel("Neighbor Pair Separation Displacement df/f")
-            ax.set_title("Neighboring Resonator-Pair Separation Displacement vs Time")
+            ax.set_title(
+                "Neighboring Resonator-Pair Separation Displacement vs Temperature"
+                if xaxis_mode == "temperature"
+                else "Neighboring Resonator-Pair Separation Displacement vs Bias Power"
+                if xaxis_mode == "power"
+                else "Neighboring Resonator-Pair Separation Displacement vs Time"
+            )
             std_label = (
                 f"NET displacement STD (final points): {net_std:.3e} df/f"
                 if np.isfinite(net_std)
@@ -618,7 +785,13 @@ class ResonatorNeighborDfrelWindowMixin:
             )
         else:
             ax.set_ylabel("Neighbor Pair Separation df/f")
-            ax.set_title("Neighboring Resonator-Pair Relative Separation vs Time")
+            ax.set_title(
+                "Neighboring Resonator-Pair Relative Separation vs Temperature"
+                if xaxis_mode == "temperature"
+                else "Neighboring Resonator-Pair Relative Separation vs Bias Power"
+                if xaxis_mode == "power"
+                else "Neighboring Resonator-Pair Relative Separation vs Time"
+            )
         if mode == "drift" and drift_single_interval_xlim is not None:
             ax.set_xlim(*drift_single_interval_xlim)
 
@@ -676,11 +849,23 @@ class ResonatorNeighborDfrelWindowMixin:
                 if isinstance(origin_dt, datetime)
                 else "unknown"
             )
-            origin_prefix = f"Elapsed-time origin: {origin_text}. "
+            if xaxis_mode == "temperature":
+                origin_prefix = "X-axis: VNA temperature_mK. "
+            elif xaxis_mode == "power":
+                origin_prefix = "X-axis: VNA bias_power_dBm. "
+            else:
+                origin_prefix = f"Elapsed-time origin: {origin_text}. "
             if mode == "drift":
                 summary_text = " Summary overlay: grey band = mean +/- 1 std; colored traces = individual pair drift rates." if show_iqr else ""
+                point_text = (
+                    "temperature point(s)"
+                    if xaxis_mode == "temperature"
+                    else "bias-power point(s)"
+                    if xaxis_mode == "power"
+                    else "elapsed-time point(s)"
+                )
                 self.res_neighbor_dfrel_status_var.set(
-                    f"{origin_prefix}Showing mean/std of pair-gap drift rate across {len(summary)} elapsed-time point(s) from {len(pair_series)} neighboring pair(s) and {len(data['tests'])} selected test unit(s); threshold {threshold_rel:.4f} df/f.{summary_text}"
+                    f"{origin_prefix}Showing mean/std of pair-gap drift rate across {len(summary)} {point_text} from {len(pair_series)} neighboring pair(s) and {len(data['tests'])} selected test unit(s); threshold {threshold_rel:.4f} df/f.{summary_text}"
                 )
             else:
                 summary_text = " Summary overlay: grey band = middle 50%, black line = median." if show_iqr else ""

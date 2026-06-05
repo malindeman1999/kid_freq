@@ -78,6 +78,10 @@ class ResonatorNeighborDataMixin:
                     "date_label": self._resonator_shift_test_date_label(scan),
                     "detail_label": detail_label,
                     "resonator_lists": {},
+                    "temperature_values_mK": [],
+                    "missing_temperature": False,
+                    "bias_power_values_dBm": [],
+                    "missing_bias_power": False,
                 }
                 units_by_key[unit_key] = unit
                 ordered_keys.append(unit_key)
@@ -87,6 +91,25 @@ class ResonatorNeighborDataMixin:
                     unit["sort_stamp"] = sort_stamp
                     unit["timestamp_dt"] = self._resonator_shift_parse_timestamp(sort_stamp)
                     unit["date_label"] = self._resonator_shift_test_date_label(scan)
+
+            temperature_mk = getattr(scan, "temperature_mK", None)
+            try:
+                temperature_mk_float = float(temperature_mk) if temperature_mk is not None else np.nan
+            except Exception:
+                temperature_mk_float = np.nan
+            if np.isfinite(temperature_mk_float):
+                unit["temperature_values_mK"].append(float(temperature_mk_float))
+            else:
+                unit["missing_temperature"] = True
+            bias_power_dbm = getattr(scan, "bias_power_dBm", None)
+            try:
+                bias_power_dbm_float = float(bias_power_dbm) if bias_power_dbm is not None else np.nan
+            except Exception:
+                bias_power_dbm_float = np.nan
+            if np.isfinite(bias_power_dbm_float):
+                unit["bias_power_values_dBm"].append(float(bias_power_dbm_float))
+            else:
+                unit["missing_bias_power"] = True
 
             freq = np.asarray(scan.freq, dtype=float)
             if freq.size == 0:
@@ -119,6 +142,16 @@ class ResonatorNeighborDataMixin:
                     resonators[resonator_label] = float(np.mean(arr))
             if not resonators:
                 continue
+            temperature_values = np.asarray(unit.get("temperature_values_mK", []), dtype=float)
+            temperature_values = temperature_values[np.isfinite(temperature_values)]
+            temperature_mk = float(np.mean(temperature_values)) if temperature_values.size else None
+            if bool(unit.get("missing_temperature", False)):
+                temperature_mk = None
+            bias_power_values = np.asarray(unit.get("bias_power_values_dBm", []), dtype=float)
+            bias_power_values = bias_power_values[np.isfinite(bias_power_values)]
+            bias_power_dbm = float(np.mean(bias_power_values)) if bias_power_values.size else None
+            if bool(unit.get("missing_bias_power", False)):
+                bias_power_dbm = None
             units.append(
                 {
                     "key": unit["key"],
@@ -128,6 +161,10 @@ class ResonatorNeighborDataMixin:
                     "date_label": str(unit["date_label"]),
                     "detail_label": str(unit["detail_label"]),
                     "label": f"{unit['date_label']} | {unit['detail_label']}",
+                    "temperature_mK": temperature_mk,
+                    "missing_temperature": bool(unit.get("missing_temperature", False)),
+                    "bias_power_dBm": bias_power_dbm,
+                    "missing_bias_power": bool(unit.get("missing_bias_power", False)),
                     "resonators": resonators,
                 }
             )
@@ -219,6 +256,8 @@ class ResonatorNeighborDataMixin:
                 points.append(
                     {
                         "elapsed_days": elapsed_days,
+                        "temperature_mK": test.get("temperature_mK"),
+                        "bias_power_dBm": test.get("bias_power_dBm"),
                         "df_over_f": float(df_hz / pair_mean_hz),
                         "df_hz": df_hz,
                         "low_freq_hz": low_freq_hz,
@@ -311,19 +350,33 @@ class ResonatorNeighborDataMixin:
 
 
     @staticmethod
-    def _resonator_neighbor_summary_by_time(pair_series: list[dict]) -> list[dict]:
+    def _resonator_neighbor_summary_by_time(pair_series: list[dict], x_key: str = "elapsed_days") -> list[dict]:
         values_by_time: dict[float, list[float]] = {}
+        temperatures_by_time: dict[float, list[float]] = {}
+        powers_by_time: dict[float, list[float]] = {}
         for pair in pair_series:
             for point in pair["points"]:
-                elapsed_days = float(point["elapsed_days"])
+                x_value = float(point.get(x_key, np.nan))
                 df_over_f = float(point.get("plot_df_over_f", point["df_over_f"]))
-                if not np.isfinite(elapsed_days) or not np.isfinite(df_over_f):
+                if not np.isfinite(x_value) or not np.isfinite(df_over_f):
                     continue
-                values_by_time.setdefault(elapsed_days, []).append(df_over_f)
+                values_by_time.setdefault(x_value, []).append(df_over_f)
+                try:
+                    temperature_mk = float(point.get("temperature_mK", np.nan))
+                except Exception:
+                    temperature_mk = np.nan
+                if np.isfinite(temperature_mk):
+                    temperatures_by_time.setdefault(x_value, []).append(temperature_mk)
+                try:
+                    bias_power_dbm = float(point.get("bias_power_dBm", np.nan))
+                except Exception:
+                    bias_power_dbm = np.nan
+                if np.isfinite(bias_power_dbm):
+                    powers_by_time.setdefault(x_value, []).append(bias_power_dbm)
 
         summary: list[dict] = []
-        for elapsed_days in sorted(values_by_time):
-            arr = np.asarray(values_by_time[elapsed_days], dtype=float)
+        for x_value in sorted(values_by_time):
+            arr = np.asarray(values_by_time[x_value], dtype=float)
             arr = arr[np.isfinite(arr)]
             if arr.size == 0:
                 continue
@@ -336,9 +389,16 @@ class ResonatorNeighborDataMixin:
             whisker_low = float(np.min(arr[arr >= lower_bound])) if np.any(arr >= lower_bound) else float(np.min(arr))
             whisker_high = float(np.max(arr[arr <= upper_bound])) if np.any(arr <= upper_bound) else float(np.max(arr))
             outliers = arr[(arr < whisker_low) | (arr > whisker_high)]
+            temp_arr = np.asarray(temperatures_by_time.get(x_value, []), dtype=float)
+            temp_arr = temp_arr[np.isfinite(temp_arr)]
+            power_arr = np.asarray(powers_by_time.get(x_value, []), dtype=float)
+            power_arr = power_arr[np.isfinite(power_arr)]
             summary.append(
                 {
-                    "elapsed_days": float(elapsed_days),
+                    "elapsed_days": float(x_value) if x_key == "elapsed_days" else np.nan,
+                    x_key: float(x_value),
+                    "temperature_mK": float(np.mean(temp_arr)) if temp_arr.size else np.nan,
+                    "bias_power_dBm": float(np.mean(power_arr)) if power_arr.size else np.nan,
                     "count": int(arr.size),
                     "mean": mean_value,
                     "std": std_value,
@@ -357,16 +417,20 @@ class ResonatorNeighborDataMixin:
 
 
     @staticmethod
-    def _resonator_neighbor_plot_series(pair_series: list[dict], mode: str) -> list[dict]:
+    def _resonator_neighbor_plot_series(pair_series: list[dict], mode: str, x_key: str = "elapsed_days") -> list[dict]:
         mode_key = str(mode).strip().lower()
         plotted: list[dict] = []
         for pair in pair_series:
             raw_points = pair.get("points", [])
             if not raw_points:
                 continue
-            baseline = float(raw_points[0]["df_over_f"])
+            ordered_points = sorted(raw_points, key=lambda item: float(item.get(x_key, np.nan)))
+            finite_points = [pt for pt in ordered_points if np.isfinite(float(pt.get(x_key, np.nan)))]
+            if not finite_points:
+                continue
+            baseline = float(finite_points[0]["df_over_f"])
             points: list[dict] = []
-            for point in raw_points:
+            for point in finite_points:
                 y_value = float(point["df_over_f"])
                 if mode_key == "change":
                     y_value -= baseline
@@ -381,39 +445,60 @@ class ResonatorNeighborDataMixin:
 
 
     @staticmethod
-    def _resonator_neighbor_drift_rate_summary(pair_series: list[dict]) -> list[dict]:
+    def _resonator_neighbor_drift_rate_summary(pair_series: list[dict], x_key: str = "elapsed_days") -> list[dict]:
         values_by_time: dict[float, list[float]] = {}
+        temperatures_by_time: dict[float, list[float]] = {}
+        powers_by_time: dict[float, list[float]] = {}
         for pair in pair_series:
-            points = pair.get("points", [])
+            points = sorted(pair.get("points", []), key=lambda item: float(item.get(x_key, np.nan)))
             if len(points) < 2:
                 continue
             for prev_point, point in zip(points[:-1], points[1:]):
-                elapsed_prev = float(prev_point["elapsed_days"])
-                elapsed_days = float(point["elapsed_days"])
+                x_prev = float(prev_point.get(x_key, np.nan))
+                x_value = float(point.get(x_key, np.nan))
                 y_prev = float(prev_point.get("plot_df_over_f", prev_point["df_over_f"]))
                 y_value = float(point.get("plot_df_over_f", point["df_over_f"]))
-                delta_days = elapsed_days - elapsed_prev
+                delta_x = x_value - x_prev
                 if (
-                    not np.isfinite(elapsed_prev)
-                    or not np.isfinite(elapsed_days)
+                    not np.isfinite(x_prev)
+                    or not np.isfinite(x_value)
                     or not np.isfinite(y_prev)
                     or not np.isfinite(y_value)
-                    or delta_days <= 0.0
+                    or delta_x <= 0.0
                 ):
                     continue
-                values_by_time.setdefault(elapsed_days, []).append(float((y_value - y_prev) / delta_days))
+                values_by_time.setdefault(x_value, []).append(float((y_value - y_prev) / delta_x))
+                try:
+                    temperature_mk = float(point.get("temperature_mK", np.nan))
+                except Exception:
+                    temperature_mk = np.nan
+                if np.isfinite(temperature_mk):
+                    temperatures_by_time.setdefault(x_value, []).append(temperature_mk)
+                try:
+                    bias_power_dbm = float(point.get("bias_power_dBm", np.nan))
+                except Exception:
+                    bias_power_dbm = np.nan
+                if np.isfinite(bias_power_dbm):
+                    powers_by_time.setdefault(x_value, []).append(bias_power_dbm)
 
         summary: list[dict] = []
-        for elapsed_days in sorted(values_by_time):
-            arr = np.asarray(values_by_time[elapsed_days], dtype=float)
+        for x_value in sorted(values_by_time):
+            arr = np.asarray(values_by_time[x_value], dtype=float)
             arr = arr[np.isfinite(arr)]
             if arr.size == 0:
                 continue
             mean_value = float(np.mean(arr))
             std_value = float(np.std(arr))
+            temp_arr = np.asarray(temperatures_by_time.get(x_value, []), dtype=float)
+            temp_arr = temp_arr[np.isfinite(temp_arr)]
+            power_arr = np.asarray(powers_by_time.get(x_value, []), dtype=float)
+            power_arr = power_arr[np.isfinite(power_arr)]
             summary.append(
                 {
-                    "elapsed_days": float(elapsed_days),
+                    "elapsed_days": float(x_value) if x_key == "elapsed_days" else np.nan,
+                    x_key: float(x_value),
+                    "temperature_mK": float(np.mean(temp_arr)) if temp_arr.size else np.nan,
+                    "bias_power_dBm": float(np.mean(power_arr)) if power_arr.size else np.nan,
                     "count": int(arr.size),
                     "mean": mean_value,
                     "std": std_value,
@@ -426,31 +511,34 @@ class ResonatorNeighborDataMixin:
 
 
     @staticmethod
-    def _resonator_neighbor_drift_rate_series(pair_series: list[dict]) -> list[dict]:
+    def _resonator_neighbor_drift_rate_series(pair_series: list[dict], x_key: str = "elapsed_days") -> list[dict]:
         drift_series: list[dict] = []
         for pair in pair_series:
-            points = pair.get("points", [])
+            points = sorted(pair.get("points", []), key=lambda item: float(item.get(x_key, np.nan)))
             if len(points) < 2:
                 continue
             drift_points: list[dict] = []
             for prev_point, point in zip(points[:-1], points[1:]):
-                elapsed_prev = float(prev_point["elapsed_days"])
-                elapsed_days = float(point["elapsed_days"])
+                x_prev = float(prev_point.get(x_key, np.nan))
+                x_value = float(point.get(x_key, np.nan))
                 y_prev = float(prev_point.get("plot_df_over_f", prev_point["df_over_f"]))
                 y_value = float(point.get("plot_df_over_f", point["df_over_f"]))
-                delta_days = elapsed_days - elapsed_prev
+                delta_x = x_value - x_prev
                 if (
-                    not np.isfinite(elapsed_prev)
-                    or not np.isfinite(elapsed_days)
+                    not np.isfinite(x_prev)
+                    or not np.isfinite(x_value)
                     or not np.isfinite(y_prev)
                     or not np.isfinite(y_value)
-                    or delta_days <= 0.0
+                    or delta_x <= 0.0
                 ):
                     continue
                 drift_points.append(
                     {
-                        "elapsed_days": float(elapsed_days),
-                        "drift_rate": float((y_value - y_prev) / delta_days),
+                        "elapsed_days": float(x_value) if x_key == "elapsed_days" else np.nan,
+                        x_key: float(x_value),
+                        "temperature_mK": point.get("temperature_mK"),
+                        "bias_power_dBm": point.get("bias_power_dBm"),
+                        "drift_rate": float((y_value - y_prev) / delta_x),
                     }
                 )
             if not drift_points:
