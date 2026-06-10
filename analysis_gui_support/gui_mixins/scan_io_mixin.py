@@ -119,7 +119,7 @@ class ScanIOMixin:
             except Exception:
                 bias_power_text = ""
             if bias_power_text:
-                parts.append(f"power {bias_power_text}")
+                parts.append(f"drive power {bias_power_text}")
         if include_file_timestamp:
             file_timestamp = str(getattr(scan, "file_timestamp", "")).strip() or "unknown"
             parts.append(f"file {file_timestamp}")

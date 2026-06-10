@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Optional
 
 import numpy as np
@@ -14,6 +15,25 @@ from ..analysis_models import _complex_from_polar, _make_event, _read_polar_seri
 from resonator.ComplexResonance import ComplexResonanceQi
 
 _HZ_PER_GHZ = 1.0e9
+_CITKID_MAIN = (
+    Path(__file__).resolve().parents[4]
+    / "PRIMA KID RESONATOR"
+    / "loganfoot"
+    / "citkid-main"
+)
+if _CITKID_MAIN.exists() and str(_CITKID_MAIN) not in sys.path:
+    sys.path.insert(0, str(_CITKID_MAIN))
+
+try:
+    from citkid.res.fitter import fit_nonlinear_iq
+    from citkid.res.funcs import nonlinear_iq
+    from citkid.res.guess import guess_p0_nonlinear_iq
+    from citkid.res.util import calc_qc_qi
+except Exception:
+    fit_nonlinear_iq = None
+    nonlinear_iq = None
+    guess_p0_nonlinear_iq = None
+    calc_qc_qi = None
 
 
 class ResonanceSelectionMixin:
@@ -87,6 +107,181 @@ class ResonanceSelectionMixin:
             "tau": bool(self.res_fix_tau_var.get()) if self.res_fix_tau_var is not None else False,
         }
 
+    def _res_logan_downward(self) -> bool:
+        var = getattr(self, "res_fix_a_mag_var", None)
+        return bool(var.get()) if var is not None else True
+
+    def _res_set_logan_model_fields(self, params: np.ndarray) -> None:
+        p = np.asarray(params, dtype=float)
+        if p.size < 8:
+            return
+        if self.res_fr_var is not None:
+            self.res_fr_var.set(f"{p[0] / _HZ_PER_GHZ:.9g}")
+        if self.res_qi_var is not None:
+            self.res_qi_var.set(f"{p[1]:.9g}")
+        if self.res_qc_var is not None:
+            self.res_qc_var.set(f"{p[2]:.9g}")
+        if self.res_qc_phase_var is not None:
+            self.res_qc_phase_var.set(f"{np.degrees(p[3]):.9g}")
+        if self.res_a_mag_var is not None:
+            self.res_a_mag_var.set(f"{p[4]:.9g}")
+        if self.res_a_phase_var is not None:
+            self.res_a_phase_var.set(f"{p[5]:.9g}")
+        if getattr(self, "res_q0_var", None) is not None:
+            self.res_q0_var.set(f"{p[6]:.9g}")
+        if self.res_tau_var is not None:
+            self.res_tau_var.set(f"{p[7]:.9g}")
+
+    def _res_set_logan_output_fields(self, payload: dict | None) -> None:
+        true_var = getattr(self, "res_true_fr_var", None)
+        delta_var = getattr(self, "res_delta_fr_var", None)
+        nrmse_var = getattr(self, "res_nrmse_var", None)
+        if payload is None:
+            if true_var is not None:
+                true_var.set("")
+            if delta_var is not None:
+                delta_var.set("")
+            if nrmse_var is not None:
+                nrmse_var.set("")
+            return
+        true_fr = payload.get("true_fr_hz")
+        delta_fr = payload.get("delta_fr_hz")
+        nrmse = payload.get("nrmse")
+        if true_var is not None:
+            true_var.set("" if true_fr is None else f"{float(true_fr) / _HZ_PER_GHZ:.9g}")
+        if delta_var is not None:
+            delta_var.set("" if delta_fr is None else f"{float(delta_fr):.9g}")
+        if nrmse_var is not None:
+            nrmse_var.set("" if nrmse is None else f"{float(nrmse):.9g}")
+
+    def _res_get_logan_params_from_fields(self, *, lo: float, hi: float) -> np.ndarray:
+        fr_hz = float(self.res_fr_var.get()) * _HZ_PER_GHZ if self.res_fr_var is not None else 0.5 * (lo + hi)
+        qr = float(self.res_qi_var.get()) if self.res_qi_var is not None else 1.0e4
+        amp = float(self.res_qc_var.get()) if self.res_qc_var is not None else 0.5
+        phi_rad = (
+            np.radians(float(self.res_qc_phase_var.get()))
+            if self.res_qc_phase_var is not None
+            else 0.0
+        )
+        a_nl = float(self.res_a_mag_var.get()) if self.res_a_mag_var is not None else 0.0
+        i0 = float(self.res_a_phase_var.get()) if self.res_a_phase_var is not None else 1.0
+        q0 = float(self.res_q0_var.get()) if getattr(self, "res_q0_var", None) is not None else 0.0
+        tau_s = float(self.res_tau_var.get()) if self.res_tau_var is not None else 0.0
+        return np.asarray([fr_hz, qr, amp, phi_rad, a_nl, i0, q0, tau_s], dtype=float)
+
+    def _res_logan_fields_are_filled(self) -> bool:
+        fields = [
+            self.res_fr_var,
+            self.res_qi_var,
+            self.res_qc_var,
+            self.res_qc_phase_var,
+            self.res_a_mag_var,
+            self.res_a_phase_var,
+            getattr(self, "res_q0_var", None),
+            self.res_tau_var,
+        ]
+        return all(field is not None and str(field.get()).strip() for field in fields)
+
+    def _res_clear_logan_params(self) -> None:
+        for field in (
+            self.res_fr_var,
+            self.res_qi_var,
+            self.res_qc_var,
+            self.res_qc_phase_var,
+            self.res_a_mag_var,
+            self.res_a_phase_var,
+            getattr(self, "res_q0_var", None),
+            self.res_tau_var,
+        ):
+            if field is not None:
+                field.set("")
+        self.res_model_preview = None
+        self._res_set_logan_output_fields(None)
+        self._res_set_status("Cleared Logan parameters. Next fit will guess from the visible raw S21 window.", "dark green")
+        self._res_render()
+
+    def _res_guess_logan_params(self, scan, mask: np.ndarray, lo: float, hi: float) -> np.ndarray:
+        freq = np.asarray(scan.freq, dtype=float)
+        z = np.asarray(scan.s21_complex_raw, dtype=np.complex128)
+        try:
+            return np.asarray(guess_p0_nonlinear_iq(freq[mask], z[mask]), dtype=float)
+        except Exception:
+            fr0 = float(0.5 * (lo + hi))
+            z0 = complex(np.mean(z[mask])) if np.count_nonzero(mask) else 1.0 + 0j
+            return np.asarray([fr0, 1.0e4, 0.5, 0.0, 0.0, z0.real, z0.imag, 0.0], dtype=float)
+
+    def _res_compute_logan_frequency_shift(self, *, lo: float, hi: float, popt: np.ndarray) -> dict[str, float]:
+        params = np.asarray(popt, dtype=float)
+        if params.size < 8:
+            return {}
+        fr0 = float(params[0])
+        qr = float(params[1])
+        a_nl = float(params[4])
+        if not np.isfinite(fr0) or not np.isfinite(qr) or qr == 0.0 or not np.isfinite(a_nl):
+            return {}
+        # Paper convention: nonlinear kinetic inductance is a soft spring, so
+        # positive a shifts the resonance downward from fr0.
+        delta_fr = -fr0 * a_nl / qr
+        true_fr = fr0 + delta_fr
+        return {
+            "true_fr_hz": float(true_fr),
+            "delta_fr_hz": float(delta_fr),
+            "delta_fr_over_fr0": float(delta_fr / fr0) if fr0 != 0.0 else np.nan,
+        }
+
+    def _res_make_logan_fit_payload(
+        self,
+        scan,
+        *,
+        lo: float,
+        hi: float,
+        p0: np.ndarray,
+        popt: np.ndarray,
+        perr: np.ndarray,
+        nrmse: float,
+        model: np.ndarray,
+        f_fit: np.ndarray,
+        success: bool,
+        message: str,
+    ) -> dict:
+        qc = np.nan
+        qi = np.nan
+        if calc_qc_qi is not None:
+            try:
+                qc, qi = calc_qc_qi(float(popt[1]), float(popt[2]))
+            except Exception:
+                qc = np.nan
+                qi = np.nan
+        shift = self._res_compute_logan_frequency_shift(lo=lo, hi=hi, popt=popt)
+        return {
+            "scan_key": self._scan_key(scan),
+            "selection_range_hz": (float(lo), float(hi)),
+            "model": "citkid.res.nonlinear_iq",
+            "parameter_names": ["fr0", "Qr", "amp", "phi", "a", "i0", "q0", "tau"],
+            "p0": np.asarray(p0, dtype=float),
+            "popt": np.asarray(popt, dtype=float),
+            "perr": np.asarray(perr, dtype=float),
+            "fr0_hz": float(popt[0]),
+            "fr_hz": float(popt[0]),
+            "q_loaded": float(popt[1]),
+            "q_coupling": float(qc),
+            "q_internal": float(qi),
+            "amp": float(popt[2]),
+            "phi_rad": float(popt[3]),
+            "phi_deg": float(np.degrees(popt[3])),
+            "a_nl": float(popt[4]),
+            "i0": float(popt[5]),
+            "q0": float(popt[6]),
+            "tau_s": float(popt[7]),
+            "downward": self._res_logan_downward(),
+            "nrmse": float(nrmse),
+            "success": bool(success),
+            "message": str(message),
+            "fit_freq_hz": np.asarray(f_fit, dtype=float),
+            "fit_s21_complex": np.asarray(model, dtype=np.complex128),
+            **shift,
+        }
+
     def _res_build_model_preview(self, scan, *, lo: float, hi: float) -> dict:
         freq = np.asarray(scan.freq, dtype=float)
         mask = (freq >= lo) & (freq <= hi)
@@ -112,14 +307,43 @@ class ResonanceSelectionMixin:
         scan = self._res_get_scan()
         if scan is None:
             return
+        if nonlinear_iq is None:
+            self._res_set_status("citkid.res is unavailable; cannot plot the Logan model.", "dark orange")
+            return
         freq = np.asarray(scan.freq, dtype=float)
         (lo, hi), mask = self._res_get_selection_mask(freq)
         if np.count_nonzero(mask) < 2:
             self._res_set_status("Need a wider displayed region to plot the model.", "dark orange")
             return
         try:
-            self.res_model_preview = self._res_build_model_preview(scan, lo=lo, hi=hi)
-            self._res_set_status("Displayed current resonator model parameters.", "dark green")
+            p0 = self._res_get_logan_params_from_fields(lo=lo, hi=hi)
+            f_fit = freq[mask]
+            model = nonlinear_iq(
+                f_fit,
+                p0[0],
+                p0[1],
+                p0[2],
+                p0[3],
+                p0[4],
+                p0[5],
+                p0[6],
+                p0[7],
+                self._res_logan_downward(),
+            )
+            self.res_model_preview = self._res_make_logan_fit_payload(
+                scan,
+                lo=lo,
+                hi=hi,
+                p0=np.asarray(p0, dtype=float),
+                popt=np.asarray(p0, dtype=float),
+                perr=np.zeros(8, dtype=float),
+                nrmse=np.nan,
+                model=model,
+                f_fit=f_fit,
+                success=True,
+                message="Displayed current Logan model parameters.",
+            )
+            self._res_set_status("Displayed current Logan model parameters.", "dark green")
             self._res_render()
         except Exception as exc:
             self._res_set_status(f"Model plot failed: {exc}", "dark orange")
@@ -145,38 +369,19 @@ class ResonanceSelectionMixin:
         scan = self._res_get_scan()
         if scan is None:
             return
+        if guess_p0_nonlinear_iq is None:
+            self._res_set_status("citkid.res is unavailable; cannot guess Logan parameters.", "dark orange")
+            return
         freq = np.asarray(scan.freq, dtype=float)
         (lo, hi), mask = self._res_get_selection_mask(freq)
         if np.count_nonzero(mask) < 2:
             lo = float(freq[0])
             hi = float(freq[-1])
-        gfreq, dfreq = self._res_extract_candidates(scan)
-        fr0 = self._res_fit_initial_frequency(lo, hi, gfreq, dfreq)
-        self._res_set_model_fields(
-            fr_hz=fr0,
-            qi=1.0e9,
-            q_cpl_mag=1.0e4,
-            q_cpl_phase_deg=0.0,
-            a_mag=1.0,
-            a_phase_deg=0.0,
-            tau_s=0.0,
-        )
-        if self.res_fix_fr_var is not None:
-            self.res_fix_fr_var.set(False)
-        if self.res_fix_qi_var is not None:
-            self.res_fix_qi_var.set(False)
-        if self.res_fix_qc_var is not None:
-            self.res_fix_qc_var.set(False)
-        if self.res_fix_qc_phase_var is not None:
-            self.res_fix_qc_phase_var.set(False)
-        if self.res_fix_a_mag_var is not None:
-            self.res_fix_a_mag_var.set(True)
-        if self.res_fix_a_phase_var is not None:
-            self.res_fix_a_phase_var.set(False)
-        if self.res_fix_tau_var is not None:
-            self.res_fix_tau_var.set(False)
+        _range, mask = self._res_get_selection_mask(freq)
+        p0 = self._res_guess_logan_params(scan, mask, lo, hi)
+        self._res_set_logan_model_fields(p0)
         self.res_model_preview = None
-        self._res_set_status("Reset resonator model parameters to defaults.", "dark green")
+        self._res_set_status("Reset Logan parameters from the raw selected span.", "dark green")
         self._res_render()
 
     def _res_current_fit(self, scan) -> Optional[dict]:
@@ -195,187 +400,99 @@ class ResonanceSelectionMixin:
         scan = self._res_get_scan()
         if scan is None:
             return
+        if fit_nonlinear_iq is None or nonlinear_iq is None:
+            self._res_set_status(
+                f"citkid.res is unavailable. Expected package path: {_CITKID_MAIN}",
+                "dark orange",
+            )
+            return
         freq = np.asarray(scan.freq, dtype=float)
         (lo, hi), mask = self._res_get_selection_mask(freq)
         if np.count_nonzero(mask) < 8:
             self._res_set_status("Need a wider displayed region before fitting.", "dark orange")
             return
 
-        z = self._res_get_normalized_complex(scan)
+        z = np.asarray(scan.s21_complex_raw, dtype=np.complex128)
         f_fit = freq[mask]
         z_fit = z[mask]
-        fit_mode = self.res_fit_mode_var.get() if self.res_fit_mode_var is not None else "both"
-        fr_guess, qi_guess, qcom_guess, a_guess, tau_guess = self._res_get_model_params_from_fields(lo=lo, hi=hi)
-        fixed = self._res_fit_fix_flags()
-        if fit_mode == "amplitude":
-            a_guess = abs(a_guess) + 0j
-            tau_guess = 0.0
-            fixed["a_phase"] = True
-            fixed["tau"] = True
-        fr_center = 0.5 * (lo + hi)
-        fr_half_span = max(0.5 * (hi - lo), 1.0)
-        base_params = {
-            "fr_rel": float((fr_guess - fr_center) / fr_half_span),
-            "log_qi": float(np.log10(max(qi_guess, 1.0))),
-            "log_qc": float(np.log10(max(abs(qcom_guess), 1.0))),
-            "qc_phase": float(np.angle(qcom_guess)),
-            "log_a_mag": float(np.log10(max(abs(a_guess), 1.0e-6))),
-            "a_phase": float(np.angle(a_guess)),
-            "tau": float(tau_guess),
-        }
+        if self._res_logan_fields_are_filled():
+            p0 = self._res_get_logan_params_from_fields(lo=lo, hi=hi)
+        else:
+            p0 = self._res_guess_logan_params(scan, mask, lo, hi)
+            self._res_set_logan_model_fields(p0)
+        fit_tau = bool(self.res_fix_tau_var.get()) if self.res_fix_tau_var is not None else True
+        downward = self._res_logan_downward()
 
-        free_keys = []
-        for key in ("fr_rel", "log_qi", "log_qc", "qc_phase", "log_a_mag", "a_phase", "tau"):
-            if key == "fr_rel" and fixed["fr"]:
-                continue
-            if key == "log_qi" and fixed["qi"]:
-                continue
-            if key == "log_qc" and fixed["qc"]:
-                continue
-            if key == "qc_phase" and fixed["qc_phase"]:
-                continue
-            if key == "log_a_mag" and fixed["a_mag"]:
-                continue
-            if key == "a_phase" and fixed["a_phase"]:
-                continue
-            if key == "tau" and fixed["tau"]:
-                continue
-            free_keys.append(key)
-
-        def unpack(params: np.ndarray) -> tuple[float, float, complex, complex, float]:
-            values = dict(base_params)
-            for key, value in zip(free_keys, params):
-                values[key] = float(value)
-            fr = float(fr_center + values["fr_rel"] * fr_half_span)
-            qi = 10.0 ** float(values["log_qi"])
-            q_cpl_mag = 10.0 ** float(values["log_qc"])
-            q_cpl_phase = float(values["qc_phase"])
-            a_mag = 10.0 ** float(values["log_a_mag"])
-            a_phase = float(values["a_phase"])
-            tau = float(values["tau"])
-            qcom = q_cpl_mag * np.exp(1j * q_cpl_phase)
-            a = a_mag * np.exp(1j * a_phase)
-            return fr, qi, qcom, a, tau
-
-        def residuals(params: np.ndarray) -> np.ndarray:
-            fr, qi, qcom, a, tau = unpack(params)
-            model = ComplexResonanceQi(f_fit, fr, qi, qcom, a, tau)
-            if fit_mode == "amplitude":
-                return np.abs(model) - np.abs(z_fit)
-            diff = model - z_fit
-            return np.concatenate((np.real(diff), np.imag(diff)))
-
-        lower_map = {
-            "fr_rel": -1.0,
-            "log_qi": 2.0,
-            "log_qc": 2.0,
-            "qc_phase": -np.pi,
-            "log_a_mag": -3.0,
-            "a_phase": -np.pi,
-            "tau": -1.0e-5,
-        }
-        upper_map = {
-            "fr_rel": 1.0,
-            "log_qi": 12.0,
-            "log_qc": 9.0,
-            "qc_phase": np.pi,
-            "log_a_mag": 1.0,
-            "a_phase": np.pi,
-            "tau": 1.0e-5,
-        }
-        p0 = np.array([base_params[key] for key in free_keys], dtype=float)
-        lower = np.array([lower_map[key] for key in free_keys], dtype=float)
-        upper = np.array([upper_map[key] for key in free_keys], dtype=float)
-        diff_step_map = {
-            "fr_rel": 1.0e-3,
-            "log_qi": 1.0e-2,
-            "log_qc": 1.0e-2,
-            "qc_phase": 1.0e-2,
-            "log_a_mag": 1.0e-2,
-            "a_phase": 1.0e-2,
-            "tau": 1.0e-10,
-        }
-        diff_step = np.array([diff_step_map[key] for key in free_keys], dtype=float)
-
-        self._res_set_busy(True, "Fitting resonator model...")
+        self._res_set_busy(True, "Fitting Logan nonlinear IQ model...")
         try:
-            result = (
-                least_squares(
-                    residuals,
-                    p0,
-                    bounds=(lower, upper),
-                    max_nfev=800,
-                    x_scale="jac",
-                    diff_step=diff_step,
-                )
-                if free_keys
-                else None
+            p0_out, popt, perr, nrmse, _figax = fit_nonlinear_iq(
+                f_fit,
+                z_fit,
+                p0=np.asarray(p0, dtype=float),
+                fit_tau=fit_tau,
+                downward=downward,
+                plotq=False,
             )
-            params_out = result.x if result is not None else np.asarray([], dtype=float)
-            fr, qi, qcom, a, tau = unpack(params_out)
-            q_loaded = 1.0 / (1.0 / qi + np.real(1.0 / qcom))
-            model = ComplexResonanceQi(f_fit, fr, qi, qcom, a, tau)
-            fit_payload = {
-                "selection_range_hz": (float(lo), float(hi)),
-                "fr_hz": float(fr),
-                "q_internal": float(qi),
-                "q_loaded": float(q_loaded),
-                "q_coupling_complex": complex(qcom),
-                "q_coupling_mag": float(np.abs(qcom)),
-                "q_coupling_phase_deg": float(np.degrees(np.angle(qcom))),
-                "a_complex": complex(a),
-                "a_mag": float(np.abs(a)),
-                "a_phase_deg": float(np.degrees(np.angle(a))),
-                "tau_s": float(tau),
-                "cost": float(result.cost) if result is not None else 0.0,
-                "success": bool(result.success) if result is not None else True,
-                "message": str(result.message) if result is not None else "All selected fit parameters were fixed.",
-                "fit_freq_hz": np.asarray(f_fit, dtype=float),
-                "fit_s21_complex": np.asarray(model, dtype=np.complex128),
-            }
-            scan.candidate_resonators["resonator_model_fit"] = fit_payload
+            p0_out = np.asarray(p0_out, dtype=float)
+            popt = np.asarray(popt, dtype=float)
+            perr = np.asarray(perr, dtype=float)
+            model = nonlinear_iq(f_fit, *popt, downward)
+            fit_payload = self._res_make_logan_fit_payload(
+                scan,
+                lo=lo,
+                hi=hi,
+                p0=p0_out,
+                popt=popt,
+                perr=perr,
+                nrmse=float(nrmse),
+                model=model,
+                f_fit=f_fit,
+                success=True,
+                message="Logan nonlinear IQ fit complete.",
+            )
+            scan.candidate_resonators["logan_nonlinear_iq_fit"] = fit_payload
             self.res_model_preview = fit_payload
-            self._res_set_model_fields(
-                fr_hz=float(fr),
-                qi=float(qi),
-                q_cpl_mag=float(np.abs(qcom)),
-                q_cpl_phase_deg=float(np.degrees(np.angle(qcom))),
-                a_mag=float(np.abs(a)),
-                a_phase_deg=float(np.degrees(np.angle(a))),
-                tau_s=float(tau),
-            )
+            self._res_set_logan_model_fields(popt)
+            self._res_set_logan_output_fields(fit_payload)
             scan.processing_history.append(
                 _make_event(
-                    "fit_resonator_model",
+                    "fit_logan_nonlinear_iq",
                     {
                         "selection_range_hz": [float(lo), float(hi)],
-                        "fr_hz": float(fr),
-                        "q_internal": float(qi),
-                        "q_loaded": float(q_loaded),
-                        "q_coupling_mag": float(np.abs(qcom)),
-                        "q_coupling_phase_deg": float(np.degrees(np.angle(qcom))),
-                        "a_mag": float(np.abs(a)),
-                        "a_phase_deg": float(np.degrees(np.angle(a))),
-                        "tau_s": float(tau),
-                        "fit_mode": fit_mode,
-                        "success": bool(result.success) if result is not None else True,
+                        "fr0_hz": float(popt[0]),
+                        "true_fr_hz": float(fit_payload.get("true_fr_hz", np.nan)),
+                        "delta_fr_hz": float(fit_payload.get("delta_fr_hz", np.nan)),
+                        "delta_fr_over_fr0": float(fit_payload.get("delta_fr_over_fr0", np.nan)),
+                        "qr": float(popt[1]),
+                        "amp": float(popt[2]),
+                        "phi_rad": float(popt[3]),
+                        "a_nl": float(popt[4]),
+                        "i0": float(popt[5]),
+                        "q0": float(popt[6]),
+                        "tau_s": float(popt[7]),
+                        "fit_tau": bool(fit_tau),
+                        "downward": bool(downward),
+                        "nrmse": float(nrmse),
+                        "success": True,
                     },
                 )
             )
             self._mark_dirty()
             self._refresh_status()
             self._autosave_dataset()
-            fit_status = "converged" if (result is None or result.success) else "did not converge"
-            fit_message = str(result.message).strip() if result is not None else "All selected fit parameters were fixed."
+            true_fr = fit_payload.get("true_fr_hz", np.nan)
+            delta_fr = fit_payload.get("delta_fr_hz", np.nan)
             self._log(
-                f"Fitted resonator model ({fit_status}, mode={fit_mode}): fr={fr / _HZ_PER_GHZ:.9g} GHz, "
-                f"Qi={qi:.4g}, Q={q_loaded:.4g}, |Qc|={abs(qcom):.4g}, |a|={abs(a):.4g}. "
-                f"Solver message: {fit_message}"
+                f"Fitted Logan nonlinear IQ model: fr0={popt[0] / _HZ_PER_GHZ:.9g} GHz, "
+                f"powered_fr={float(true_fr) / _HZ_PER_GHZ:.9g} GHz, delta_fr={float(delta_fr):.4g} Hz, "
+                f"Qr={popt[1]:.4g}, amp={popt[2]:.4g}, phi={np.degrees(popt[3]):.4g} deg, "
+                f"a={popt[4]:.4g}, nrmse={float(nrmse):.4g}."
             )
             self._res_set_status(
-                f"Fit {'complete' if (result is None or result.success) else 'ended without convergence'}: "
-                f"fr={fr / _HZ_PER_GHZ:.9g} GHz, Qi={qi:.4g}, Q={q_loaded:.4g}, |Qc|={abs(qcom):.4g}, |a|={abs(a):.4g}.",
-                "dark green" if (result is None or result.success) else "dark orange",
+                f"Fit complete: fr0={popt[0] / _HZ_PER_GHZ:.9g} GHz, "
+                f"powered_fr={float(true_fr) / _HZ_PER_GHZ:.9g} GHz, delta_fr={float(delta_fr):.4g} Hz, "
+                f"Qr={popt[1]:.4g}, a={popt[4]:.4g}, nrmse={float(nrmse):.4g}.",
+                "dark green",
             )
             self._res_render()
         except Exception as exc:
@@ -486,23 +603,15 @@ class ResonanceSelectionMixin:
         if not scans:
             messagebox.showwarning("No selection", "Select scans for analysis first.")
             return
-        if not self._selected_scans_have_attached_normalized():
-            messagebox.showwarning(
-                "Missing normalized data",
-                "Run pipeline in order:\n"
-                "Phase Correction -> Baseline Filtering -> Interp+Smooth -> Normalize Baseline -> Resonator Selection.\n\n"
-                "All selected scans must have attached normalized data first.",
+        if fit_nonlinear_iq is None or nonlinear_iq is None or guess_p0_nonlinear_iq is None:
+            messagebox.showerror(
+                "citkid unavailable",
+                f"Could not import citkid.res from:\n{_CITKID_MAIN}",
             )
             return
 
         chosen_scan = self._choose_resonance_scan(scans)
         if chosen_scan is None:
-            return
-        if "phase_class_points" not in chosen_scan.candidate_resonators:
-            messagebox.showwarning(
-                "Missing phase class points",
-                "Run 'Phase Correction' and click Attach for this scan before resonance selection.",
-            )
             return
         self._last_resonance_scan_key = self._scan_key(chosen_scan)
 
@@ -510,7 +619,7 @@ class ResonanceSelectionMixin:
             self._res_close()
 
         self.res_window = tk.Toplevel(self.root)
-        self.res_window.title("Resonance Selection")
+        self.res_window.title("Logan Resonance Fit")
         self.res_window.geometry("1250x780")
         self.res_window.protocol("WM_DELETE_WINDOW", self._res_close)
 
@@ -518,102 +627,66 @@ class ResonanceSelectionMixin:
         top.pack(side="top", fill="x")
         tk.Label(
             top,
-            text=f"Scan: {Path(chosen_scan.filename).name} | Use toolbar zoom on left plot to select frequency region",
+            text=f"Scan: {Path(chosen_scan.filename).name} | Use toolbar zoom on left plot to select raw S21 fit region",
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
         tk.Button(top, text="Choose Scan", command=self.open_resonance_selection_window).pack(side="right")
-        tk.Button(top, text="Attach Selection", command=self._res_attach_selection).pack(side="right", padx=(0, 8))
-        self.res_fit_button = tk.Button(top, text="Fit Resonator Model", command=self._res_fit_displayed_data)
+        self.res_fit_button = tk.Button(top, text="Fit Logan Model", command=self._res_fit_displayed_data)
         self.res_fit_button.pack(side="right", padx=(0, 8))
-        tk.Button(top, text="Reset Model Params", command=self._res_reset_model_parameters).pack(
-            side="right", padx=(0, 8)
-        )
-        tk.Button(top, text="Plot Current Model", command=self._res_display_current_model).pack(
-            side="right", padx=(0, 8)
-        )
+        tk.Button(top, text="Clear Params", command=self._res_clear_logan_params).pack(side="right", padx=(0, 8))
         tk.Button(top, text="Reset View", command=self._res_reset_view).pack(side="right", padx=(0, 8))
         self.res_auto_y_var = tk.BooleanVar(value=True)
-        self.res_display_mode_var = tk.StringVar(value="amplitude")
-        self.res_fit_mode_var = tk.StringVar(value="amplitude")
+        self.res_display_mode_var = None
         controls = tk.Frame(self.res_window, padx=8, pady=2)
         controls.pack(side="top", fill="x")
         tk.Checkbutton(
             controls,
-            text="Auto-scale |S21| in window",
+            text="Auto-scale raw |S21| in window",
             variable=self.res_auto_y_var,
             command=self._res_on_controls_changed,
         ).pack(side="left", padx=(0, 12))
-        tk.Radiobutton(
-            controls,
-            text="Amplitude",
-            variable=self.res_display_mode_var,
-            value="amplitude",
-            command=self._res_on_controls_changed,
-        ).pack(side="left")
-        tk.Radiobutton(
-            controls,
-            text="Phase",
-            variable=self.res_display_mode_var,
-            value="phase",
-            command=self._res_on_controls_changed,
-        ).pack(side="left", padx=(8, 0))
-        tk.Label(controls, text="Fit").pack(side="left", padx=(12, 2))
-        tk.Radiobutton(
-            controls,
-            text="Both amp+phase",
-            variable=self.res_fit_mode_var,
-            value="both",
-            command=self._res_update_fit_mode_controls,
-        ).pack(side="left")
-        tk.Radiobutton(
-            controls,
-            text="Amplitude only",
-            variable=self.res_fit_mode_var,
-            value="amplitude",
-            command=self._res_update_fit_mode_controls,
-        ).pack(side="left", padx=(8, 0))
         self.res_fr_var = tk.StringVar()
         self.res_qi_var = tk.StringVar()
         self.res_qc_var = tk.StringVar()
         self.res_qc_phase_var = tk.StringVar()
         self.res_a_mag_var = tk.StringVar()
         self.res_a_phase_var = tk.StringVar()
+        self.res_q0_var = tk.StringVar()
         self.res_tau_var = tk.StringVar()
-        self.res_fix_fr_var = tk.BooleanVar(value=False)
-        self.res_fix_qi_var = tk.BooleanVar(value=False)
-        self.res_fix_qc_var = tk.BooleanVar(value=False)
-        self.res_fix_qc_phase_var = tk.BooleanVar(value=False)
+        self.res_true_fr_var = tk.StringVar()
+        self.res_delta_fr_var = tk.StringVar()
+        self.res_nrmse_var = tk.StringVar()
         self.res_fix_a_mag_var = tk.BooleanVar(value=True)
-        self.res_fix_a_phase_var = tk.BooleanVar(value=False)
-        self.res_fix_tau_var = tk.BooleanVar(value=False)
-        tk.Label(controls, text="fr (GHz)").pack(side="left", padx=(12, 2))
+        self.res_fix_tau_var = tk.BooleanVar(value=True)
+        tk.Label(controls, text="fr0 (GHz)").pack(side="left", padx=(12, 2))
         tk.Entry(controls, textvariable=self.res_fr_var, width=10).pack(side="left")
-        tk.Checkbutton(controls, text="Fix", variable=self.res_fix_fr_var).pack(side="left", padx=(2, 0))
-        tk.Label(controls, text="Qi").pack(side="left", padx=(8, 2))
-        tk.Entry(controls, textvariable=self.res_qi_var, width=10).pack(side="left")
-        tk.Checkbutton(controls, text="Fix", variable=self.res_fix_qi_var).pack(side="left", padx=(2, 0))
-        tk.Label(controls, text="|Qc|").pack(side="left", padx=(8, 2))
-        tk.Entry(controls, textvariable=self.res_qc_var, width=10).pack(side="left")
-        tk.Checkbutton(controls, text="Fix", variable=self.res_fix_qc_var).pack(side="left", padx=(2, 0))
-        tk.Label(controls, text="Qc phase (deg)").pack(side="left", padx=(8, 2))
-        tk.Entry(controls, textvariable=self.res_qc_phase_var, width=10).pack(side="left")
-        tk.Checkbutton(controls, text="Fix", variable=self.res_fix_qc_phase_var).pack(side="left", padx=(2, 0))
-        tk.Label(controls, text="|a|").pack(side="left", padx=(8, 2))
+        tk.Label(controls, text="Qr").pack(side="left", padx=(8, 2))
+        tk.Entry(controls, textvariable=self.res_qi_var, width=8).pack(side="left")
+        tk.Label(controls, text="amp").pack(side="left", padx=(8, 2))
+        tk.Entry(controls, textvariable=self.res_qc_var, width=7).pack(side="left")
+        tk.Label(controls, text="phi (deg)").pack(side="left", padx=(8, 2))
+        tk.Entry(controls, textvariable=self.res_qc_phase_var, width=7).pack(side="left")
+        tk.Label(controls, text="a").pack(side="left", padx=(8, 2))
         tk.Entry(controls, textvariable=self.res_a_mag_var, width=8).pack(side="left")
-        tk.Checkbutton(controls, text="Fix", variable=self.res_fix_a_mag_var).pack(side="left", padx=(2, 0))
-        tk.Label(controls, text="a phase (deg)").pack(side="left", padx=(8, 2))
+        tk.Label(controls, text="i0").pack(side="left", padx=(8, 2))
         self.res_a_phase_entry = tk.Entry(controls, textvariable=self.res_a_phase_var, width=8)
         self.res_a_phase_entry.pack(side="left")
-        self.res_fix_a_phase_check = tk.Checkbutton(controls, text="Fix", variable=self.res_fix_a_phase_var)
-        self.res_fix_a_phase_check.pack(side="left", padx=(2, 0))
+        tk.Label(controls, text="q0").pack(side="left", padx=(8, 2))
+        tk.Entry(controls, textvariable=self.res_q0_var, width=8).pack(side="left")
         tk.Label(controls, text="tau (s)").pack(side="left", padx=(8, 2))
         self.res_tau_entry = tk.Entry(controls, textvariable=self.res_tau_var, width=10)
         self.res_tau_entry.pack(side="left")
-        self.res_fix_tau_check = tk.Checkbutton(controls, text="Fix", variable=self.res_fix_tau_var)
-        self.res_fix_tau_check.pack(side="left", padx=(2, 0))
+        tk.Checkbutton(controls, text="Fit tau", variable=self.res_fix_tau_var).pack(side="left", padx=(8, 0))
+        tk.Checkbutton(controls, text="Downward", variable=self.res_fix_a_mag_var).pack(side="left", padx=(8, 0))
+        tk.Label(controls, text="powered fr (GHz)").pack(side="left", padx=(12, 2))
+        tk.Entry(controls, textvariable=self.res_true_fr_var, width=10, state="readonly").pack(side="left")
+        tk.Label(controls, text="delta fr (Hz)").pack(side="left", padx=(8, 2))
+        tk.Entry(controls, textvariable=self.res_delta_fr_var, width=12, state="readonly").pack(side="left")
+        tk.Label(controls, text="nrmse").pack(side="left", padx=(8, 2))
+        tk.Entry(controls, textvariable=self.res_nrmse_var, width=10, state="readonly").pack(side="left")
 
         self.res_status_var = tk.StringVar(
-            value="Use toolbar zoom to select a frequency span."
+            value="Use toolbar zoom to select a raw S21 frequency span."
         )
         status_row = tk.Frame(self.res_window, padx=8, pady=4)
         status_row.pack(side="top", fill="x")
@@ -641,25 +714,26 @@ class ResonanceSelectionMixin:
         self._res_selected_range = tuple(view["xlim"])
         self._res_manual_ylim = tuple(view["ylim"]) if view["ylim"] is not None else None
         self.res_auto_y_var.set(bool(view["auto_y"]))
-        self.res_display_mode_var.set("phase" if bool(view["show_phase_left"]) else "amplitude")
-        gfreq, dfreq = self._res_extract_candidates(chosen_scan)
-        fr0 = self._res_fit_initial_frequency(self._res_selected_range[0], self._res_selected_range[1], gfreq, dfreq)
-        self._res_set_model_fields(
-            fr_hz=fr0,
-            qi=1.0e9,
-            q_cpl_mag=1.0e4,
-            q_cpl_phase_deg=0.0,
-            a_mag=1.0,
-            a_phase_deg=0.0,
-            tau_s=0.0,
-        )
-        self._res_update_fit_mode_controls()
+        for field in (
+            self.res_fr_var,
+            self.res_qi_var,
+            self.res_qc_var,
+            self.res_qc_phase_var,
+            self.res_a_mag_var,
+            self.res_a_phase_var,
+            self.res_q0_var,
+            self.res_tau_var,
+        ):
+            if field is not None:
+                field.set("")
+        self._res_set_logan_output_fields(None)
+        self.res_model_preview = None
         self._res_view_history = []
         self._res_view_history_index = -1
         self._res_history_applying = False
         self._res_push_view_history()
         self._res_update_toolbar_history_buttons()
-        self._res_set_busy(True, "Opening resonance selection plot...")
+        self._res_set_busy(True, "Opening raw S21 plot...")
         self.res_window.update_idletasks()
         self.res_window.after(10, self._res_render)
 
@@ -860,7 +934,7 @@ class ResonanceSelectionMixin:
     def _res_render(self) -> None:
         if self.res_figure is None or self.res_canvas is None:
             return
-        self._res_set_busy(True, "Rendering resonance selection plot...")
+        self._res_set_busy(True, "Rendering raw Logan fit plot...")
         scan = self._res_get_scan()
         try:
             if scan is None:
@@ -873,14 +947,8 @@ class ResonanceSelectionMixin:
 
             freq = np.asarray(scan.freq, dtype=float)
             freq_ghz = freq / _HZ_PER_GHZ
-            use_corrected = True
-            show_phase = (
-                self.res_display_mode_var is not None and self.res_display_mode_var.get() == "phase"
-            )
-            y_left = self._res_get_normalized_phase(scan) if show_phase else self._res_get_normalized_amp(scan)
-            z = self._res_get_normalized_complex(scan)
-            gfreq, dfreq = self._res_extract_candidates(scan)
-            phase_points = self._res_get_phase_class_points(scan)
+            z = np.asarray(scan.s21_complex_raw, dtype=np.complex128)
+            y_left = np.abs(z)
 
             self.res_figure.clear()
             ax_amp = self.res_figure.add_subplot(1, 2, 1)
@@ -888,13 +956,10 @@ class ResonanceSelectionMixin:
             self.res_amp_ax = ax_amp
             self.res_iq_ax = ax_iq
 
-            left_label = "Normalized phase (deg)" if show_phase else None
-            if show_phase:
-                ax_amp.plot(freq_ghz, y_left, color="0.65", linewidth=0.8, label=left_label)
             ax_amp.set_xlabel("Frequency (GHz)")
-            ax_amp.set_ylabel("Phase (deg)" if show_phase else "|S21|")
+            ax_amp.set_ylabel("|S21|")
             ax_amp.grid(True, alpha=0.3)
-            ax_amp.set_title("Zoom Here To Select/Display Frequency Window", fontsize=10)
+            ax_amp.set_title("Raw S21 Fit Window", fontsize=10)
 
             if self._res_selected_range is None:
                 self._res_selected_range = (float(freq[0]), float(freq[-1]))
@@ -908,37 +973,6 @@ class ResonanceSelectionMixin:
             elif self._res_manual_ylim is not None:
                 ax_amp.set_ylim(self._res_manual_ylim)
 
-            if gfreq.size:
-                gmask = (gfreq >= lo) & (gfreq <= hi)
-                if np.any(gmask):
-                    gfreq_in = gfreq[gmask]
-                    gi = np.clip(np.searchsorted(freq, gfreq_in), 0, freq.size - 1)
-                    ax_amp.plot(
-                        freq_ghz[gi],
-                        y_left[gi],
-                        linestyle="none",
-                        marker="o",
-                        markersize=8,
-                        markerfacecolor="none",
-                        markeredgewidth=1.5,
-                        color="green",
-                        label="Gaussian candidates",
-                    )
-            if dfreq.size:
-                dmask = (dfreq >= lo) & (dfreq <= hi)
-                if np.any(dmask):
-                    dfreq_in = dfreq[dmask]
-                    di = np.clip(np.searchsorted(freq, dfreq_in), 0, freq.size - 1)
-                    ax_amp.plot(
-                        freq_ghz[di],
-                        y_left[di],
-                        linestyle="none",
-                        marker="D",
-                        markersize=6,
-                        color="red",
-                        label="dS21/df peaks",
-                    )
-
             if np.count_nonzero(mask) >= 2:
                 ax_amp.plot(
                     freq_ghz[mask],
@@ -947,54 +981,6 @@ class ResonanceSelectionMixin:
                     linewidth=1.2,
                     label="Displayed region",
                 )
-
-                reg_freqs = phase_points["regular_freqs"]
-                if reg_freqs.size:
-                    rmask = (reg_freqs >= lo) & (reg_freqs <= hi)
-                    if np.any(rmask):
-                        rf = reg_freqs[rmask]
-                        ri = self._res_nearest_indices(rf, freq)
-                        ax_amp.plot(
-                            freq_ghz[ri],
-                            y_left[ri],
-                            linestyle="none",
-                            marker="o",
-                            markersize=4,
-                            color="black",
-                            label="2*pi phase wrap corrections",
-                        )
-
-                cong_freqs = phase_points["irregular_congruent_freqs"]
-                if cong_freqs.size:
-                    cmask = (cong_freqs >= lo) & (cong_freqs <= hi)
-                    if np.any(cmask):
-                        cf = cong_freqs[cmask]
-                        ci = self._res_nearest_indices(cf, freq)
-                        ax_amp.plot(
-                            freq_ghz[ci],
-                            y_left[ci],
-                            linestyle="none",
-                            marker="o",
-                            markersize=5,
-                            color="pink",
-                            label="VNA phase corrections",
-                        )
-
-                nonc_freqs = phase_points["irregular_noncongruent_freqs"]
-                if nonc_freqs.size:
-                    nmask = (nonc_freqs >= lo) & (nonc_freqs <= hi)
-                    if np.any(nmask):
-                        nf = nonc_freqs[nmask]
-                        ni = self._res_nearest_indices(nf, freq)
-                        ax_amp.plot(
-                            freq_ghz[ni],
-                            y_left[ni],
-                            linestyle="none",
-                            marker="o",
-                            markersize=5,
-                            color="blue",
-                            label="Other phase discontinuities",
-                        )
 
                 ax_iq.plot(
                     np.real(z[mask]),
@@ -1019,75 +1005,6 @@ class ResonanceSelectionMixin:
                     label="End",
                     zorder=3,
                 )
-                if gfreq.size:
-                    gmask = (gfreq >= lo) & (gfreq <= hi)
-                    if np.any(gmask):
-                        gfreq_in = gfreq[gmask]
-                        gi = np.clip(np.searchsorted(freq, gfreq_in), 0, freq.size - 1)
-                        ax_iq.plot(
-                            np.real(z[gi]),
-                            np.imag(z[gi]),
-                            linestyle="none",
-                            marker="o",
-                            markersize=8,
-                            markerfacecolor="none",
-                            markeredgewidth=1.5,
-                            color="green",
-                            label="Gaussian candidates",
-                        )
-                if dfreq.size:
-                    dmask = (dfreq >= lo) & (dfreq <= hi)
-                    if np.any(dmask):
-                        dfreq_in = dfreq[dmask]
-                        di = np.clip(np.searchsorted(freq, dfreq_in), 0, freq.size - 1)
-                        ax_iq.plot(
-                            np.real(z[di]),
-                            np.imag(z[di]),
-                            linestyle="none",
-                            marker="D",
-                            markersize=6,
-                            color="red",
-                            label="dS21/df peaks",
-                        )
-                if reg_freqs.size:
-                    rmask = (reg_freqs >= lo) & (reg_freqs <= hi)
-                    if np.any(rmask):
-                        ri = self._res_nearest_indices(reg_freqs[rmask], freq)
-                        ax_iq.plot(
-                            np.real(z[ri]),
-                            np.imag(z[ri]),
-                            linestyle="none",
-                            marker="o",
-                            markersize=4,
-                            color="black",
-                            label="2*pi phase wrap corrections",
-                        )
-                if cong_freqs.size:
-                    cmask = (cong_freqs >= lo) & (cong_freqs <= hi)
-                    if np.any(cmask):
-                        ci = self._res_nearest_indices(cong_freqs[cmask], freq)
-                        ax_iq.plot(
-                            np.real(z[ci]),
-                            np.imag(z[ci]),
-                            linestyle="none",
-                            marker="o",
-                            markersize=5,
-                            color="pink",
-                            label="VNA phase corrections",
-                        )
-                if nonc_freqs.size:
-                    nmask = (nonc_freqs >= lo) & (nonc_freqs <= hi)
-                    if np.any(nmask):
-                        ni = self._res_nearest_indices(nonc_freqs[nmask], freq)
-                        ax_iq.plot(
-                            np.real(z[ni]),
-                            np.imag(z[ni]),
-                            linestyle="none",
-                            marker="o",
-                            markersize=5,
-                            color="blue",
-                            label="Other phase discontinuities",
-                        )
                 fit_payload = None
                 if (
                     isinstance(self.res_model_preview, dict)
@@ -1100,54 +1017,91 @@ class ResonanceSelectionMixin:
                     )
                 ):
                     fit_payload = self.res_model_preview
-                elif self._res_current_fit(scan) is not None:
-                    fit_payload = self._res_current_fit(scan)
+                else:
+                    stored = scan.candidate_resonators.get("logan_nonlinear_iq_fit")
+                    if isinstance(stored, dict):
+                        fit_range = stored.get("selection_range_hz")
+                        if isinstance(fit_range, (list, tuple)) and len(fit_range) == 2 and np.allclose(
+                            np.asarray(fit_range, dtype=float),
+                            np.asarray((lo, hi), dtype=float),
+                            rtol=0.0,
+                            atol=1e-6,
+                        ):
+                            fit_payload = stored
                 if fit_payload is not None:
                     fit_freq = np.asarray(fit_payload["fit_freq_hz"], dtype=float)
                     fit_freq_ghz = fit_freq / _HZ_PER_GHZ
                     fit_z = np.asarray(fit_payload["fit_s21_complex"], dtype=np.complex128)
-                    fit_y = np.degrees(np.unwrap(np.angle(fit_z))) if show_phase else np.abs(fit_z)
-                    fr_model_hz = float(fit_payload.get("fr_hz", 0.5 * (lo + hi)))
-                    fr_model_ghz = fr_model_hz / _HZ_PER_GHZ
+                    fit_y = np.abs(fit_z)
+                    fr0_hz = float(fit_payload.get("fr0_hz", fit_payload.get("fr_hz", 0.5 * (lo + hi))))
+                    fr0_ghz = fr0_hz / _HZ_PER_GHZ
+                    true_fr_raw = fit_payload.get("true_fr_hz")
+                    true_fr_hz = float(true_fr_raw) if true_fr_raw is not None else np.nan
+                    true_fr_ghz = true_fr_hz / _HZ_PER_GHZ
                     ax_amp.plot(
                         fit_freq_ghz,
                         fit_y,
                         color="darkorange",
                         linewidth=1.4,
                         linestyle="--",
+                        label="Logan fit",
                     )
                     if fit_freq.size:
-                        fr_idx = int(np.argmin(np.abs(fit_freq - fr_model_hz)))
-                        ax_amp.plot(
-                            [fr_model_ghz],
-                            [fit_y[fr_idx]],
-                            linestyle="none",
-                            marker="x",
-                            markersize=10,
-                            markeredgewidth=2.0,
-                            color="purple",
+                        fr_idx = int(np.argmin(np.abs(fit_freq - fr0_hz)))
+                        fr0_iq = np.interp(fr0_hz, fit_freq, np.real(fit_z)) + 1j * np.interp(
+                            fr0_hz, fit_freq, np.imag(fit_z)
                         )
+                        if lo <= fr0_hz <= hi:
+                            ax_amp.axvline(
+                                fr0_ghz,
+                                color="purple",
+                                linestyle=":",
+                                linewidth=1.4,
+                                label="fr0",
+                            )
+                        if np.isfinite(true_fr_hz) and lo <= true_fr_hz <= hi:
+                            ax_amp.axvline(
+                                true_fr_ghz,
+                                color="crimson",
+                                linestyle="-.",
+                                linewidth=1.4,
+                                label="powered fr",
+                            )
                     ax_iq.plot(
                         np.real(fit_z),
                         np.imag(fit_z),
                         color="darkorange",
                         linewidth=1.2,
                         linestyle="--",
-                        label="Resonator fit",
+                        label="Logan fit",
                     )
                     if fit_freq.size:
                         ax_iq.plot(
-                            [np.real(fit_z[fr_idx])],
-                            [np.imag(fit_z[fr_idx])],
+                            [np.real(fr0_iq)],
+                            [np.imag(fr0_iq)],
                             linestyle="none",
                             marker="x",
                             markersize=10,
                             markeredgewidth=2.0,
                             color="purple",
-                            label="Model fr",
+                            label="fr0",
                         )
+                        if np.isfinite(true_fr_hz) and lo <= true_fr_hz <= hi:
+                            true_iq = np.interp(true_fr_hz, fit_freq, np.real(fit_z)) + 1j * np.interp(
+                                true_fr_hz, fit_freq, np.imag(fit_z)
+                            )
+                            ax_iq.plot(
+                                [np.real(true_iq)],
+                                [np.imag(true_iq)],
+                                linestyle="none",
+                                marker="+",
+                                markersize=12,
+                                markeredgewidth=2.0,
+                                color="crimson",
+                                label="powered fr",
+                            )
                 self._res_set_status(
-                    f"Displayed {np.count_nonzero(mask)} points: {lo_ghz:.9g} to {hi_ghz:.9g} GHz."
+                    f"Displayed {np.count_nonzero(mask)} raw points: {lo_ghz:.9g} to {hi_ghz:.9g} GHz."
                     ,
                     "dark green",
                 )
@@ -1155,11 +1109,9 @@ class ResonanceSelectionMixin:
                 ax_iq.text(0.5, 0.5, "Select a wider frequency region.", ha="center", va="center")
                 self._res_set_status("Selection too small. Drag a wider region.", "dark orange")
 
-            if self.res_display_mode_var is not None and self.res_display_mode_var.get() == "amplitude":
-                ax_amp.legend(loc="best", fontsize=8)
-            iq_label = "normalized" if use_corrected else "raw"
-            ax_iq.set_xlabel(f"Re({iq_label} S21)")
-            ax_iq.set_ylabel(f"Im({iq_label} S21)")
+            ax_amp.legend(loc="best", fontsize=8)
+            ax_iq.set_xlabel("Re(raw S21)")
+            ax_iq.set_ylabel("Im(raw S21)")
             ax_iq.grid(True, alpha=0.3)
             ax_iq.set_title("Complex Plane (Displayed Frequency Window)", fontsize=10)
             ax_iq.set_aspect("equal", adjustable="box")
@@ -1186,7 +1138,11 @@ class ResonanceSelectionMixin:
         self.res_qc_phase_var = None
         self.res_a_mag_var = None
         self.res_a_phase_var = None
+        self.res_q0_var = None
         self.res_tau_var = None
+        self.res_true_fr_var = None
+        self.res_delta_fr_var = None
+        self.res_nrmse_var = None
         self.res_fix_fr_var = None
         self.res_fix_qi_var = None
         self.res_fix_qc_var = None

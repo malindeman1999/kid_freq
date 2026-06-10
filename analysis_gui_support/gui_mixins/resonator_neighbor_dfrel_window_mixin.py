@@ -116,7 +116,7 @@ class ResonatorNeighborDfrelWindowMixin:
         ).pack(side="left", padx=(0, 8))
         tk.Radiobutton(
             control_row,
-            text="Bias Power",
+            text="Drive Power",
             value="power",
             variable=self.res_neighbor_dfrel_xaxis_mode_var,
             command=self._render_resonator_neighbor_dfrel_window,
@@ -306,8 +306,8 @@ class ResonatorNeighborDfrelWindowMixin:
             ]
             if missing_power:
                 raise ValueError(
-                    "Bias-power rates require every selected VNA scan in the plotted test units "
-                    "to have bias_power_dBm assigned. Missing bias power for: "
+                    "Drive power rates require every selected VNA scan in the plotted test units "
+                    "to have drive power assigned. Missing drive power for: "
                     + ", ".join(missing_power[:8])
                     + (f", ... (+{len(missing_power) - 8} more)" if len(missing_power) > 8 else "")
                 )
@@ -413,7 +413,7 @@ class ResonatorNeighborDfrelWindowMixin:
                 else "drift"
             ).strip().lower()
             self.res_neighbor_top_rates_status_var.set(
-                f"Showing top {len(rows)} of {int(total_count)} neighboring pair interval rate(s), sorted by |rate| descending (mode: {mode}, x-axis: {'temperature' if is_temp else 'bias power' if is_power else 'time'})."
+                f"Showing top {len(rows)} of {int(total_count)} neighboring pair interval rate(s), sorted by |rate| descending (mode: {mode}, x-axis: {'temperature' if is_temp else 'drive power' if is_power else 'time'})."
             )
 
 
@@ -502,8 +502,8 @@ class ResonatorNeighborDfrelWindowMixin:
             ]
             if missing_power:
                 message = (
-                    "Bias-power x-axis requires every selected VNA scan in the plotted test units "
-                    "to have bias_power_dBm assigned. Missing bias power for: "
+                    "Drive power x-axis requires every selected VNA scan in the plotted test units "
+                    "to have drive power assigned. Missing drive power for: "
                     + ", ".join(missing_power[:8])
                     + (f", ... (+{len(missing_power) - 8} more)" if len(missing_power) > 8 else "")
                 )
@@ -723,7 +723,7 @@ class ResonatorNeighborDfrelWindowMixin:
         elif xaxis_mode == "temperature":
             ax.set_xlabel("Temperature (mK)")
         elif xaxis_mode == "power":
-            ax.set_xlabel("Bias Power (dBm)")
+            ax.set_xlabel("Drive Power (dBm)")
         else:
             ax.set_xlabel("Elapsed Time (days)")
         if mode == "drift":
@@ -731,7 +731,7 @@ class ResonatorNeighborDfrelWindowMixin:
             span_label = (
                 "temperature span"
                 if xaxis_mode == "temperature"
-                else "bias-power span"
+                else "drive power span"
                 if xaxis_mode == "power"
                 else "elapsed days"
             )
@@ -739,7 +739,7 @@ class ResonatorNeighborDfrelWindowMixin:
             ax.set_title(
                 "Neighbor Pair Gap Drift Rate vs Temperature"
                 if xaxis_mode == "temperature"
-                else "Neighbor Pair Gap Drift Rate vs Bias Power"
+                else "Neighbor Pair Gap Drift Rate vs Drive Power"
                 if xaxis_mode == "power"
                 else "Neighbor Pair Gap Drift Rate vs Time"
             )
@@ -764,7 +764,7 @@ class ResonatorNeighborDfrelWindowMixin:
             ax.set_title(
                 "Neighboring Resonator-Pair Separation Displacement vs Temperature"
                 if xaxis_mode == "temperature"
-                else "Neighboring Resonator-Pair Separation Displacement vs Bias Power"
+                else "Neighboring Resonator-Pair Separation Displacement vs Drive Power"
                 if xaxis_mode == "power"
                 else "Neighboring Resonator-Pair Separation Displacement vs Time"
             )
@@ -788,7 +788,7 @@ class ResonatorNeighborDfrelWindowMixin:
             ax.set_title(
                 "Neighboring Resonator-Pair Relative Separation vs Temperature"
                 if xaxis_mode == "temperature"
-                else "Neighboring Resonator-Pair Relative Separation vs Bias Power"
+                else "Neighboring Resonator-Pair Relative Separation vs Drive Power"
                 if xaxis_mode == "power"
                 else "Neighboring Resonator-Pair Relative Separation vs Time"
             )
@@ -852,7 +852,7 @@ class ResonatorNeighborDfrelWindowMixin:
             if xaxis_mode == "temperature":
                 origin_prefix = "X-axis: VNA temperature_mK. "
             elif xaxis_mode == "power":
-                origin_prefix = "X-axis: VNA bias_power_dBm. "
+                origin_prefix = "X-axis: VNA drive power. "
             else:
                 origin_prefix = f"Elapsed-time origin: {origin_text}. "
             if mode == "drift":
@@ -860,7 +860,7 @@ class ResonatorNeighborDfrelWindowMixin:
                 point_text = (
                     "temperature point(s)"
                     if xaxis_mode == "temperature"
-                    else "bias-power point(s)"
+                    else "drive power point(s)"
                     if xaxis_mode == "power"
                     else "elapsed-time point(s)"
                 )

@@ -344,7 +344,7 @@ class ScanDateToolsMixin:
             if bias_power_dbm is None:
                 skipped.append(
                     f"{self._scan_file_two_level_context(scan)}: "
-                    f"no _aXXX.npy bias-power token found in filename {Path(str(getattr(scan, 'filename', ''))).name}"
+                    f"no _aXXX.npy drive power token found in filename {Path(str(getattr(scan, 'filename', ''))).name}"
                 )
                 continue
             old_power = getattr(scan, "bias_power_dBm", None)
@@ -357,7 +357,7 @@ class ScanDateToolsMixin:
             proposed_updates.append((scan, old_power_float, bias_power_dbm))
 
         if not proposed_updates:
-            message = "No VNA scan bias powers need updating from filename."
+            message = "No VNA scan drive powers need updating from filename."
             if skipped:
                 message += "\n\nSkipped:\n" + "\n".join(skipped[:10])
             messagebox.showwarning("No updates", message)
@@ -380,8 +380,8 @@ class ScanDateToolsMixin:
                 preview_lines.append(f"... and {len(skipped) - 10} more")
 
         approved = self._confirm_bulk_text_changes(
-            "Update VNA Bias Powers From Filename",
-            "The scans below will have bias_power_dBm updated from a filename token like _a-44.npy.",
+            "Update VNA Drive Powers From Filename",
+            "The scans below will have drive power updated from a filename token like _a-44.npy.",
             preview_lines,
         )
         if not approved:
@@ -414,11 +414,11 @@ class ScanDateToolsMixin:
         self._refresh_status()
         self._autosave_dataset()
         self._log(
-            f"Updated VNA bias_power_dBm for {len(proposed_updates)} scan(s) from filename; skipped {len(skipped)}."
+            f"Updated VNA drive power for {len(proposed_updates)} scan(s) from filename; skipped {len(skipped)}."
         )
         messagebox.showinfo(
-            "Bias powers updated",
-            f"Updated bias_power_dBm for {len(proposed_updates)} scan(s)."
+            "Drive powers updated",
+            f"Updated drive power for {len(proposed_updates)} scan(s)."
             + (f"\nSkipped {len(skipped)} scan(s)." if skipped else ""),
         )
 

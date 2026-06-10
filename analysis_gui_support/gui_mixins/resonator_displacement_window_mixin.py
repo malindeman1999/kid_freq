@@ -69,8 +69,15 @@ class ResonatorDisplacementWindowMixin:
         ).pack(side="left", padx=(0, 8))
         tk.Radiobutton(
             control_row,
-            text="Bias Power",
+            text="Drive Power",
             value="power",
+            variable=self.res_displacement_xaxis_mode_var,
+            command=self._render_resonator_displacement_window,
+        ).pack(side="left", padx=(0, 8))
+        tk.Radiobutton(
+            control_row,
+            text="F0 Fit",
+            value="f0_power_fit",
             variable=self.res_displacement_xaxis_mode_var,
             command=self._render_resonator_displacement_window,
         ).pack(side="left", padx=(0, 8))
@@ -231,8 +238,11 @@ class ResonatorDisplacementWindowMixin:
             if self.res_displacement_xaxis_mode_var is not None
             else "elapsed"
         ).strip().lower()
-        if xaxis_mode not in {"elapsed", "date", "temperature", "power"}:
+        if xaxis_mode not in {"elapsed", "date", "temperature", "power", "f0_power_fit"}:
             xaxis_mode = "elapsed"
+        if xaxis_mode == "f0_power_fit":
+            self._render_resonator_displacement_f0_power_fit(state, ax)
+            return
         x_key = (
             "temperature_mK"
             if xaxis_mode == "temperature"
@@ -268,8 +278,8 @@ class ResonatorDisplacementWindowMixin:
             ]
             if missing_power:
                 message = (
-                    "Bias-power x-axis requires every selected VNA scan in the plotted test units "
-                    "to have bias_power_dBm assigned. Missing bias power for: "
+                    "Drive power x-axis requires every selected VNA scan in the plotted test units "
+                    "to have drive power assigned. Missing drive power for: "
                     + ", ".join(missing_power[:8])
                     + (f", ... (+{len(missing_power) - 8} more)" if len(missing_power) > 8 else "")
                 )
@@ -359,14 +369,14 @@ class ResonatorDisplacementWindowMixin:
         elif xaxis_mode == "temperature":
             ax.set_xlabel("Temperature (mK)")
         elif xaxis_mode == "power":
-            ax.set_xlabel("Bias Power (dBm)")
+            ax.set_xlabel("Drive Power (dBm)")
         else:
             ax.set_xlabel("Elapsed Time (days)")
         ax.set_ylabel("Relative Displacement (f - f0) / f0")
         ax.set_title(
             "Marked Resonator Relative Displacement vs Temperature"
             if xaxis_mode == "temperature"
-            else "Marked Resonator Relative Displacement vs Bias Power"
+            else "Marked Resonator Relative Displacement vs Drive Power"
             if xaxis_mode == "power"
             else "Marked Resonator Relative Displacement vs Time"
         )
@@ -398,10 +408,129 @@ class ResonatorDisplacementWindowMixin:
             if xaxis_mode == "temperature":
                 origin_prefix = "X-axis: VNA temperature_mK. "
             elif xaxis_mode == "power":
-                origin_prefix = "X-axis: VNA bias_power_dBm. "
+                origin_prefix = "X-axis: VNA drive power. "
             else:
                 origin_prefix = f"Elapsed-time origin: {origin_text}. "
             self.res_displacement_status_var.set(
                 f"{origin_prefix}Showing {len(resonator_series)} resonator curve(s) from {len(state['tests'])} selected test unit(s); mean net shift (final points) = {mean_net_shift:+.3e} df/f. Grey band is mean +/- 1 std and black curve is mean."
+            )
+        self.res_displacement_canvas.draw_idle()
+
+    def _render_resonator_displacement_f0_power_fit(self, state: dict, ax) -> None:
+        resonator_series = state["resonator_series"]
+        missing_power = [
+            str(test.get("label", test.get("detail_label", "unknown scan")))
+            for test in state["tests"]
+            if test.get("bias_power_dBm") is None or bool(test.get("missing_bias_power", False))
+        ]
+        if missing_power:
+            message = (
+                "F0 fit requires every selected VNA scan in the plotted test units "
+                "to have drive power assigned. Missing drive power for: "
+                + ", ".join(missing_power[:8])
+                + (f", ... (+{len(missing_power) - 8} more)" if len(missing_power) > 8 else "")
+            )
+            ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes, wrap=True)
+            ax.set_axis_off()
+            if self.res_displacement_status_var is not None:
+                self.res_displacement_status_var.set(message)
+            self.res_displacement_canvas.draw_idle()
+            return
+
+        points_by_power: dict[float, list[tuple[float, float]]] = {}
+        for series in resonator_series:
+            try:
+                resonator_f0_hz = float(series.get("initial_freq_hz", np.nan))
+            except Exception:
+                resonator_f0_hz = np.nan
+            if not np.isfinite(resonator_f0_hz) or resonator_f0_hz <= 0.0:
+                continue
+            for point in series.get("points", []):
+                try:
+                    power_dbm = float(point.get("bias_power_dBm", np.nan))
+                    df_over_f0 = float(point.get("df_over_f0", np.nan))
+                except Exception:
+                    continue
+                if np.isfinite(power_dbm) and np.isfinite(df_over_f0):
+                    points_by_power.setdefault(power_dbm, []).append((resonator_f0_hz, df_over_f0))
+
+        if not points_by_power:
+            message = "No finite resonator frequency, relative displacement, and drive power points were available for F0 fit."
+            ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes, wrap=True)
+            ax.set_axis_off()
+            if self.res_displacement_status_var is not None:
+                self.res_displacement_status_var.set(message)
+            self.res_displacement_canvas.draw_idle()
+            return
+
+        powers = sorted(points_by_power)
+        cmap = plt.cm.get_cmap("rainbow")
+        norm = mcolors.Normalize(vmin=0.0, vmax=max(float(len(powers) - 1), 1.0))
+        fit_rows: list[tuple[float, float, int]] = []
+        for power_index, power_dbm in enumerate(powers):
+            rows = points_by_power[power_dbm]
+            freqs = np.asarray([row[0] for row in rows], dtype=float)
+            shifts = np.asarray([row[1] for row in rows], dtype=float)
+            finite = np.isfinite(freqs) & np.isfinite(shifts) & (freqs > 0.0)
+            freqs = freqs[finite]
+            shifts = shifts[finite]
+            if freqs.size == 0:
+                continue
+            color = cmap(norm(float(power_index)))
+            ax.scatter(
+                freqs / 1.0e9,
+                shifts,
+                s=18,
+                alpha=0.78,
+                color=color,
+                edgecolors="none",
+                label=f"{power_dbm:g} dBm",
+                zorder=3.0,
+            )
+            if freqs.size < 2:
+                continue
+            z = 1.0 / freqs
+            denom = float(np.sum(z * z))
+            slope = float(np.sum(z * shifts) / denom) if denom > 0.0 else np.nan
+            power_si = float(power_dbm)
+            es = float(-power_si / slope) if np.isfinite(slope) and slope != 0.0 else np.nan
+            if not np.isfinite(es):
+                continue
+            x_fit = np.linspace(float(np.min(freqs)), float(np.max(freqs)), 200)
+            y_fit = -power_si / (x_fit * es)
+            ax.plot(x_fit / 1.0e9, y_fit, color=color, linewidth=2.0, alpha=0.95, zorder=4.0)
+            fit_rows.append((power_dbm, es, int(freqs.size)))
+
+        ax.axhline(0.0, color="0.5", linewidth=0.8, linestyle="--")
+        ax.grid(True, alpha=0.3)
+        ax.set_xlabel("Resonator Frequency f0 (GHz)")
+        ax.set_ylabel("Relative Displacement (f - f0) / f0")
+        ax.set_title("Marked Resonator Relative Displacement vs f0 by Drive Power")
+        ax.legend(loc="lower right", fontsize=8, title="Drive Power")
+
+        if fit_rows:
+            fit_text = "Fit: df/f = -Pg / (f0 Es)\n" + "\n".join(
+                f"{power_dbm:g} dBm: Es={es:.3e} J (n={count})"
+                for power_dbm, es, count in fit_rows
+            )
+        else:
+            fit_text = "Fit: df/f = -Pg / (f0 Es)\nNo finite Es fits"
+        ax.text(
+            0.02,
+            0.02,
+            fit_text,
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=9,
+            bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "alpha": 0.84, "edgecolor": "0.6"},
+        )
+
+        self.res_displacement_figure.tight_layout()
+        if self.res_displacement_status_var is not None:
+            fit_count = len(fit_rows)
+            point_count = sum(len(rows) for rows in points_by_power.values())
+            self.res_displacement_status_var.set(
+                f"Showing f0 scatter for {point_count} resonator point(s) across {len(powers)} drive power level(s); fitted Es for {fit_count} power level(s). Pg uses the stored drive power value directly as SI units."
             )
         self.res_displacement_canvas.draw_idle()

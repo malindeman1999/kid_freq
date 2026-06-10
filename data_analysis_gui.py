@@ -29,6 +29,7 @@ from analysis_gui_support.gui_mixins.attached_resonance_editor_mixin import (
     AttachedResonanceEditorMixin,
 )
 from analysis_gui_support.gui_mixins.baseline_filter_mixin import BaselineFilterMixin
+from analysis_gui_support.gui_mixins.batch_resonance_fit_mixin import BatchResonanceFitMixin
 from analysis_gui_support.gui_mixins.dataset_lifecycle_mixin import DatasetLifecycleMixin
 from analysis_gui_support.gui_mixins.dsdf_convolution_mixin import DSDFConvolutionMixin
 from analysis_gui_support.gui_mixins.gaussian_convolution_mixin import GaussianConvolutionMixin
@@ -52,6 +53,7 @@ class DataAnalysisGUI(
     AnalysisSelectorPlotMixin,
     AttachedResonanceEditorMixin,
     BaselineFilterMixin,
+    BatchResonanceFitMixin,
     DatasetLifecycleMixin,
     DSDFConvolutionMixin,
     GaussianConvolutionMixin,
@@ -218,7 +220,11 @@ class DataAnalysisGUI(
         self.res_qc_phase_var: Optional[tk.StringVar] = None
         self.res_a_mag_var: Optional[tk.StringVar] = None
         self.res_a_phase_var: Optional[tk.StringVar] = None
+        self.res_q0_var: Optional[tk.StringVar] = None
         self.res_tau_var: Optional[tk.StringVar] = None
+        self.res_true_fr_var: Optional[tk.StringVar] = None
+        self.res_delta_fr_var: Optional[tk.StringVar] = None
+        self.res_nrmse_var: Optional[tk.StringVar] = None
         self.res_fix_fr_var: Optional[tk.BooleanVar] = None
         self.res_fix_qi_var: Optional[tk.BooleanVar] = None
         self.res_fix_qc_var: Optional[tk.BooleanVar] = None
@@ -579,6 +585,9 @@ class DataAnalysisGUI(
             button_col2, text="Resonance Fitting", width=button_width, command=self.open_resonance_selection_window
         )
         right_button_specs.append({"button": self.res_button})
+        right_button_specs.append({"text": "Fit Marked Resonators", "command": self.open_batch_resonance_fit_window})
+        right_button_specs.append({"text": "Rank Resonator Fits", "command": self.open_resonance_fit_quality_window})
+        right_button_specs.append({"text": "Check Fit Offsets", "command": self.open_resonance_fit_offset_window})
         right_button_specs.append({"text": "Mark Res. on Sel. Scans", "command": self.open_attached_resonance_editor})
         right_button_specs.append({"text": "Clear All Res. Markers", "command": self.clear_all_resonator_markers})
         right_button_specs.append({"text": "Link Gaussian Minima", "command": self.open_link_gaussian_minima_window})
@@ -591,7 +600,7 @@ class DataAnalysisGUI(
         right_button_specs.append({"text": "Plot Resonator Markers", "command": self.open_attached_resonance_plotter})
         right_button_specs.append({"text": "Update Dates From Path", "command": self.open_update_dates_dialog})
         right_button_specs.append({"text": "Update Temps From Filename", "command": self.update_vna_temperatures_from_filenames})
-        right_button_specs.append({"text": "Update Powers From Filename", "command": self.update_vna_bias_powers_from_filenames})
+        right_button_specs.append({"text": "Update Drive Powers From Filename", "command": self.update_vna_bias_powers_from_filenames})
         right_button_specs.append({"text": "Reorder Scans By Date", "command": self.reorder_vna_scans_by_date})
         right_button_specs.append({"text": "Pair df/f vs Time", "command": self.open_resonator_neighbor_dfrel_window})
         right_button_specs.append({"text": "Resonator df/f vs Time", "command": self.open_resonator_displacement_window})

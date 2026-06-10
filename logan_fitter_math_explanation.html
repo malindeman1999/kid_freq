@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logan Nonlinear Resonator Fitter Math</title>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [["\\(", "\\)"]],
+        displayMath: [["\\[", "\\]"]]
+      }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: #1f2933;
+      background: #f6f8fb;
+      line-height: 1.55;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 28px 22px 48px;
+      background: #ffffff;
+      min-height: 100vh;
+      box-shadow: 0 0 0 1px #e5e9f0;
+    }
+    h1, h2, h3 {
+      line-height: 1.2;
+      color: #102a43;
+    }
+    h1 {
+      margin-top: 0;
+      font-size: 2rem;
+    }
+    h2 {
+      margin-top: 2rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid #d9e2ec;
+      font-size: 1.35rem;
+    }
+    h3 {
+      margin-top: 1.5rem;
+      font-size: 1.05rem;
+    }
+    code {
+      background: #eef2f7;
+      padding: 0.08rem 0.25rem;
+      border-radius: 4px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.95em;
+    }
+    pre {
+      overflow-x: auto;
+      background: #17202a;
+      color: #ecf0f1;
+      padding: 12px 14px;
+      border-radius: 6px;
+    }
+    pre code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 1rem 0;
+      font-size: 0.96rem;
+    }
+    th, td {
+      border: 1px solid #d9e2ec;
+      padding: 8px 10px;
+      vertical-align: top;
+    }
+    th {
+      background: #eef2f7;
+      text-align: left;
+    }
+    .note {
+      border-left: 4px solid #2f80ed;
+      background: #eef6ff;
+      padding: 10px 14px;
+      margin: 1rem 0;
+    }
+    .warning {
+      border-left: 4px solid #c2410c;
+      background: #fff7ed;
+      padding: 10px 14px;
+      margin: 1rem 0;
+    }
+    .small {
+      color: #52606d;
+      font-size: 0.92rem;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Math Used by the Logan Nonlinear Resonator Fitter</h1>
+
+  <p>
+    This note explains the nonlinear resonator model used by the new GUI
+    resonance fitter, how it maps onto the paper
+    <em>Operation of a titanium nitride superconducting microresonator detector
+    in the nonlinear regime</em>, and why the fitted frequency parameter is the
+    low-power resonance frequency \(f_{r,0}\), not the power-shifted resonance
+    frequency \(f_r\).
+  </p>
+
+  <p class="small">
+    Code locations used here:
+    <code>citkid-main/citkid/res/funcs.py</code>,
+    <code>citkid-main/citkid/res/fitter.py</code>, and
+    <code>analysis_gui_support/gui_mixins/resonance_selection_mixin.py</code>.
+  </p>
+
+  <h2>Paper Model</h2>
+
+  <p>
+    In the linear resonator model, the paper writes the forward transmission as
+  </p>
+
+  \[
+    S_{21} = 1 - {Q_r \over Q_c}{1 \over 1 + 2jQ_r x},
+  \]
+
+  <p>
+    with detuning
+  </p>
+
+  \[
+    x = {\omega_g - \omega_r \over \omega_r}.
+  \]
+
+  <p>
+    The paper then introduces nonlinear kinetic inductance. The resonance
+    frequency shifts from its low-power value:
+  </p>
+
+  \[
+    \omega_r = \omega_{r,0} + \delta \omega_r.
+  \]
+
+  <p>
+    For the soft-spring kinetic-inductance nonlinearity in the paper,
+  </p>
+
+  \[
+    \delta x =
+    {\delta \omega_r \over \omega_{r,0}}
+    = -{E \over E_*}.
+  \]
+
+  <p>
+    The sign is physically important: for positive stored energy and positive
+    nonlinearity scale, the resonance shifts downward.
+  </p>
+
+  <p>
+    The paper defines the low-power detuning
+  </p>
+
+  \[
+    x_0 = {\omega_g - \omega_{r,0} \over \omega_{r,0}},
+  \]
+
+  <p>
+    and dimensionless linewidth-scaled variables
+  </p>
+
+  \[
+    y = Q_r x, \qquad y_0 = Q_r x_0.
+  \]
+
+  <p>
+    The nonlinear equation appears as
+  </p>
+
+  \[
+    y = y_0 + {a \over 1 + 4y^2}.
+  \]
+
+  <p>
+    Rearranged into the form solved by the code, this is
+  </p>
+
+  \[
+    y_0 = y - {a \over 1 + 4y^2}.
+  \]
+
+  <h2>Code Model</h2>
+
+  <p>
+    The core code in <code>citkid.res.funcs.nonlinear_iq</code> computes
+  </p>
+
+  <pre><code>deltaf = f - fr
+y0 = Qr * deltaf / fr
+y = get_y(y0, a, downward)
+s21_readout = (i0 + 1.j * q0) * exp(-2.j * pi * deltaf * tau)
+s21_res = 1 - (amp / cos(phi)) * exp(1.j * phi) / (1 + 2.j * y)
+z = s21_readout * s21_res</code></pre>
+
+  <p>
+    Written mathematically, the fitted model is
+  </p>
+
+  \[
+    z(f) =
+    (i_0 + jq_0)e^{-2\pi j(f-f_{r,0})\tau}
+    \left[
+      1 -
+      {A \over \cos\phi}
+      {e^{j\phi} \over 1 + 2jy}
+    \right],
+  \]
+
+  <p>
+    where \(A\) is the fitted <code>amp</code> parameter, documented as
+    \(Q_r/Q_c\), and \(y\) is the selected real root of the nonlinear cubic.
+  </p>
+
+  <h3>The Actual Cubic Solved by <code>get_y</code></h3>
+
+  <p>
+    The code calls
+  </p>
+
+  <pre><code>cardan(4.0, -4.0 * y0, 1.0, -(y0 + a), largest)</code></pre>
+
+  <p>
+    so the polynomial being solved is
+  </p>
+
+  \[
+    4y^3 - 4y_0y^2 + y - y_0 - a = 0.
+  \]
+
+  <p>
+    This is equivalent to
+  </p>
+
+  \[
+    y_0 = y - {a \over 1 + 4y^2}.
+  \]
+
+  <p>
+    That matches the paper equation after rearranging
+    \(y = y_0 + a/(1 + 4y^2)\).
+  </p>
+
+  <h2>Proof that the Fit Returns \(f_{r,0}\), Not \(f_r\)</h2>
+
+  <p>
+    The proof is direct from the code definition of \(y_0\):
+  </p>
+
+  \[
+    y_0 = Q_r {f - f_r^{\mathrm{code}} \over f_r^{\mathrm{code}}}.
+  \]
+
+  <p>
+    In the paper,
+  </p>
+
+  \[
+    y_0 = Q_r x_0
+    =
+    Q_r {\omega_g - \omega_{r,0} \over \omega_{r,0}}.
+  \]
+
+  <p>
+    Identifying \(f\) with the generator frequency and using
+    \(f=\omega/(2\pi)\), the code's fitted <code>fr</code> parameter has to be
+    the frequency used in the denominator of \(x_0\):
+  </p>
+
+  \[
+    f_r^{\mathrm{code}} = f_{r,0}.
+  \]
+
+  <p>
+    The code does not fit a separate power-shifted \(f_r\). Instead, it fits
+    \(f_{r,0}\), \(Q_r\), and \(a\), then solves the nonlinear detuning equation
+    to generate the shifted response branch.
+  </p>
+
+  <div class="note">
+    The GUI therefore labels the input field as <code>fr0 (GHz)</code>. The
+    fitted payload stores both <code>fr0_hz</code> and the older compatibility
+    key <code>fr_hz</code>; both refer to the fitted low-power resonance
+    frequency.
+  </div>
+
+  <h2>Derived Shift Used by the GUI</h2>
+
+  <p>
+    The shifted resonance condition in the paper is \(x=0\), equivalently
+    \(y=0\). Substitute \(y=0\) into the code/paper nonlinear equation:
+  </p>
+
+  \[
+    y_0 = y - {a \over 1 + 4y^2}
+    \quad\Longrightarrow\quad
+    y_0 = -a.
+  \]
+
+  <p>
+    Since
+  </p>
+
+  \[
+    y_0 = Q_r {f_{\mathrm{true}} - f_{r,0} \over f_{r,0}},
+  \]
+
+  <p>
+    the model-predicted shifted resonance frequency is
+  </p>
+
+  \[
+    f_{\mathrm{true}}
+    =
+    f_{r,0}\left(1 - {a \over Q_r}\right).
+  \]
+
+  <p>
+    The reported shift is therefore
+  </p>
+
+  \[
+    \Delta f_r
+    =
+    f_{\mathrm{true}} - f_{r,0}
+    =
+    -{f_{r,0}a \over Q_r}.
+  \]
+
+  <p>
+    This is what the GUI reports in the output-only fields:
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>GUI output</th>
+        <th>Definition</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>true fr (GHz)</code></td>
+        <td>\(f_{\mathrm{true}} = f_{r,0} + \Delta f_r\)</td>
+      </tr>
+      <tr>
+        <td><code>delta fr (Hz)</code></td>
+        <td>\(\Delta f_r = -f_{r,0}a/Q_r\)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    Positive \(a\) gives a negative \(\Delta f_r\), so the true shifted
+    resonance marker should appear to the left of the \(f_{r,0}\) marker.
+  </p>
+
+  <h2>What the Fitter Optimizes</h2>
+
+  <p>
+    The fitter returns eight optimized parameters:
+  </p>
+
+  \[
+    p =
+    \left[
+      f_{r,0}, Q_r, A, \phi, a, i_0, q_0, \tau
+    \right].
+  \]
+
+  <p>
+    The fit stacks real and imaginary residuals:
+  </p>
+
+  \[
+    r =
+    \begin{bmatrix}
+      \operatorname{Re}(z_{\mathrm{model}} - z_{\mathrm{data}}) \\
+      \operatorname{Im}(z_{\mathrm{model}} - z_{\mathrm{data}})
+    \end{bmatrix}.
+  \]
+
+  <p>
+    In the GUI, the data passed to the fitter are the raw complex S21 samples
+    visible in the selected plot window. If every parameter field is filled, the
+    fields are used as the initial guess. If any field is empty, the GUI calls
+    <code>guess_p0_nonlinear_iq</code> on the visible window and uses that guess.
+  </p>
+
+  <h2>Differences and Caveats</h2>
+
+  <h3>1. Code comments do not match the implemented equation</h3>
+
+  <div class="warning">
+    <p>
+      The comments/docstrings in <code>citkid.res.funcs.py</code> say:
+    </p>
+    \[
+      y_0 = y + {a \over 1+y^2}.
+    \]
+    <p>
+      That is not the polynomial actually solved. The implementation solves:
+    </p>
+    \[
+      y_0 = y - {a \over 1+4y^2}.
+    \]
+    <p>
+      The implementation matches the paper equation after rearrangement; the
+      comment has both the wrong sign and a missing factor of 4.
+    </p>
+  </div>
+
+  <h3>2. The paper's basic transfer function is idealized</h3>
+
+  <p>
+    The paper's Eq. 1 is
+  </p>
+
+  \[
+    S_{21} = 1 - {Q_r \over Q_c}{1 \over 1+2jQ_rx}.
+  \]
+
+  <p>
+    The code includes additional practical fit terms:
+  </p>
+
+  <ul>
+    <li>\(i_0 + jq_0\): complex gain/offset scale,</li>
+    <li>\(\tau\): cable/electrical delay term,</li>
+    <li>\(\phi\): impedance mismatch rotation,</li>
+    <li>\(A/\cos\phi\): coupling-depth parameterization with \(A=\mathrm{amp}\).</li>
+  </ul>
+
+  <h3>3. The fitter docstring assumes gain and phase are removed</h3>
+
+  <p>
+    <code>fit_nonlinear_iq</code> says the system gain and phase are assumed to
+    be removed before fitting, and that \(i_0\), \(q_0\), and \(\tau\) are only
+    fine-tuning terms. The GUI currently fits raw S21 directly. That can still
+    work because the model has \(i_0\), \(q_0\), \(\tau\), and \(\phi\), but it
+    is a looser fit problem than the docstring's preferred calibrated use case.
+  </p>
+
+  <h3>4. The code's <code>fr</code> name is ambiguous</h3>
+
+  <p>
+    The code parameter is named <code>fr</code>, but mathematically it maps to
+    \(f_{r,0}\). The GUI now labels it <code>fr0</code> to avoid confusing it
+    with the power-shifted resonance \(f_{\mathrm{true}}\).
+  </p>
+
+  <h3>5. A scaling comment in <code>nonlinear_iq_for_fitter</code> is typo-prone</h3>
+
+  <p>
+    The comment says the fitter input is scaled as <code>fr X 100^6</code>.
+    The implementation actually multiplies by <code>100e-6</code> before
+    fitting and divides by <code>100e-6</code> inside
+    <code>nonlinear_iq_for_fitter</code>. The implementation is internally
+    consistent; the comment is easy to misread.
+  </p>
+
+  <h2>Summary</h2>
+
+  <ul>
+    <li>The fitted frequency parameter is \(f_{r,0}\), the low-power resonance frequency.</li>
+    <li>The shifted resonance is derived, not independently fitted.</li>
+    <li>The GUI reports \(f_{\mathrm{true}} = f_{r,0}(1-a/Q_r)\).</li>
+    <li>The GUI reports \(\Delta f_r = -f_{r,0}a/Q_r\).</li>
+    <li>The implementation matches the paper's nonlinear equation, but the code comments describing that equation are wrong.</li>
+  </ul>
+</main>
+</body>
+</html>
