@@ -225,6 +225,8 @@ class DataAnalysisGUI(
         self.res_true_fr_var: Optional[tk.StringVar] = None
         self.res_delta_fr_var: Optional[tk.StringVar] = None
         self.res_nrmse_var: Optional[tk.StringVar] = None
+        self.res_qi_output_var: Optional[tk.StringVar] = None
+        self.res_qc_output_var: Optional[tk.StringVar] = None
         self.res_fix_fr_var: Optional[tk.BooleanVar] = None
         self.res_fix_qi_var: Optional[tk.BooleanVar] = None
         self.res_fix_qc_var: Optional[tk.BooleanVar] = None

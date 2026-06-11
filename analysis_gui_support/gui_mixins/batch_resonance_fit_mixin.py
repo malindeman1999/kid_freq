@@ -86,6 +86,37 @@ class BatchResonanceFitMixin:
         self.res_fit_offset_x_var = tk.StringVar(value="reference_frequency")
         self.res_fit_offset_color_var = tk.StringVar(value="scan")
 
+        x_frame = tk.LabelFrame(radio_row, text="X axis", padx=6, pady=4)
+        x_frame.pack(side="left", padx=(0, 10), fill="y")
+        tk.Radiobutton(
+            x_frame,
+            text="reference frequency",
+            variable=self.res_fit_offset_x_var,
+            value="reference_frequency",
+            command=self._res_fit_offset_render,
+        ).pack(anchor="w")
+        tk.Radiobutton(
+            x_frame,
+            text="nonlinear parameter a",
+            variable=self.res_fit_offset_x_var,
+            value="a_nl",
+            command=self._res_fit_offset_render,
+        ).pack(anchor="w")
+        tk.Radiobutton(
+            x_frame,
+            text="true offset / fr_r",
+            variable=self.res_fit_offset_x_var,
+            value="true_rel",
+            command=self._res_fit_offset_render,
+        ).pack(anchor="w")
+        tk.Radiobutton(
+            x_frame,
+            text="bias power",
+            variable=self.res_fit_offset_x_var,
+            value="bias_power",
+            command=self._res_fit_offset_render,
+        ).pack(anchor="w")
+
         y_frame = tk.LabelFrame(radio_row, text="Y axis", padx=6, pady=4)
         y_frame.pack(side="left", padx=(0, 10), fill="y")
         tk.Radiobutton(
@@ -116,35 +147,18 @@ class BatchResonanceFitMixin:
             value="true_rel",
             command=self._res_fit_offset_render,
         ).pack(anchor="w")
-
-        x_frame = tk.LabelFrame(radio_row, text="X axis", padx=6, pady=4)
-        x_frame.pack(side="left", padx=(0, 10), fill="y")
         tk.Radiobutton(
-            x_frame,
-            text="reference frequency",
-            variable=self.res_fit_offset_x_var,
-            value="reference_frequency",
+            y_frame,
+            text="Q internal",
+            variable=self.res_fit_offset_y_var,
+            value="q_internal",
             command=self._res_fit_offset_render,
         ).pack(anchor="w")
         tk.Radiobutton(
-            x_frame,
-            text="nonlinear parameter a",
-            variable=self.res_fit_offset_x_var,
-            value="a_nl",
-            command=self._res_fit_offset_render,
-        ).pack(anchor="w")
-        tk.Radiobutton(
-            x_frame,
-            text="true offset / fr_r",
-            variable=self.res_fit_offset_x_var,
-            value="true_rel",
-            command=self._res_fit_offset_render,
-        ).pack(anchor="w")
-        tk.Radiobutton(
-            x_frame,
-            text="bias power",
-            variable=self.res_fit_offset_x_var,
-            value="bias_power",
+            y_frame,
+            text="Q coupling",
+            variable=self.res_fit_offset_y_var,
+            value="q_coupling",
             command=self._res_fit_offset_render,
         ).pack(anchor="w")
 
@@ -332,6 +346,14 @@ class BatchResonanceFitMixin:
         a_values = np.asarray([point["a_nl"] for point in points], dtype=float)
         nrmse_values = np.asarray([point.get("nrmse", np.nan) for point in points], dtype=float)
         bias_power_values = np.asarray([point.get("bias_power_dbm", np.nan) for point in points], dtype=float)
+        def _payload_float(point: dict, key: str) -> float:
+            try:
+                return float(point.get("payload", {}).get(key, np.nan))
+            except Exception:
+                return np.nan
+
+        q_internal_values = np.asarray([_payload_float(point, "q_internal") for point in points], dtype=float)
+        q_coupling_values = np.asarray([_payload_float(point, "q_coupling") for point in points], dtype=float)
         scan_indices = np.asarray([point["scan_index"] for point in points], dtype=float)
 
         x_mode = getattr(self, "res_fit_offset_x_var", tk.StringVar(value="reference_frequency")).get()
@@ -365,6 +387,12 @@ class BatchResonanceFitMixin:
         elif y_mode == "true_rel":
             y = true_offset / reference_fr0
             y_label = "True offset / reference fr0"
+        elif y_mode == "q_internal":
+            y = q_internal_values
+            y_label = "Internal Q"
+        elif y_mode == "q_coupling":
+            y = q_coupling_values
+            y_label = "Coupling Q"
         else:
             y = (model_offset - true_offset) / reference_fr0
             y_label = "(model offset - true offset) / reference fr0"
@@ -421,7 +449,7 @@ class BatchResonanceFitMixin:
                     x[finite],
                     y[finite],
                     c=reference_fr0[finite] / _HZ_PER_GHZ,
-                    cmap="rainbow",
+                    cmap="rainbow_r",
                     s=36,
                     edgecolors="0.2",
                     zorder=2,
@@ -544,6 +572,9 @@ class BatchResonanceFitMixin:
             ("true offset Hz", "true_offset_hz", 12),
             ("model offset Hz", "model_offset_hz", 13),
             ("model/true", "ratio", 10),
+            ("Qr", "qr", 10),
+            ("Qi", "qi", 10),
+            ("Qc", "qc", 10),
             ("a", "a_nl", 9),
             ("nrmse", "nrmse", 10),
         ):
@@ -562,6 +593,8 @@ class BatchResonanceFitMixin:
             ("powered fr GHz", "true_fr_ghz", 12),
             ("delta fr Hz", "delta_fr_hz", 12),
             ("Qr", "qr", 10),
+            ("Qi", "qi", 10),
+            ("Qc", "qc", 10),
             ("a", "a_nl", 9),
             ("nrmse", "nrmse", 10),
         ):
@@ -629,6 +662,9 @@ class BatchResonanceFitMixin:
         model_offset = float(point.get("model_offset_hz", np.nan))
         ratio = model_offset / true_offset if np.isfinite(true_offset) and true_offset != 0.0 else np.nan
         vars_map["ratio"].set(f"{ratio:.9g}" if np.isfinite(ratio) else "")
+        vars_map["qr"].set(f"{float(payload.get('q_loaded', np.nan)):.9g}")
+        vars_map["qi"].set(f"{float(payload.get('q_internal', np.nan)):.9g}")
+        vars_map["qc"].set(f"{float(payload.get('q_coupling', np.nan)):.9g}")
         vars_map["a_nl"].set(self._res_fit_offset_format_decimal(point.get("a_nl", np.nan)))
         vars_map["nrmse"].set(f"{float(payload.get('nrmse', np.nan)):.9g}")
 
@@ -651,6 +687,8 @@ class BatchResonanceFitMixin:
             )
             reference_vars["delta_fr_hz"].set(f"{float(reference_payload.get('delta_fr_hz', np.nan)):.9g}")
             reference_vars["qr"].set(f"{float(reference_payload.get('q_loaded', np.nan)):.9g}")
+            reference_vars["qi"].set(f"{float(reference_payload.get('q_internal', np.nan)):.9g}")
+            reference_vars["qc"].set(f"{float(reference_payload.get('q_coupling', np.nan)):.9g}")
             reference_vars["a_nl"].set(self._res_fit_offset_format_decimal(reference_payload.get("a_nl", np.nan)))
             reference_vars["nrmse"].set(f"{float(reference_payload.get('nrmse', np.nan)):.9g}")
             ref_marker_hz = reference_payload.get("marker_frequency_hz")
@@ -782,6 +820,8 @@ class BatchResonanceFitMixin:
             ("powered fr GHz", "true_fr_ghz", 12),
             ("delta fr Hz", "delta_fr_hz", 12),
             ("Qr", "qr", 10),
+            ("Qi", "qi", 10),
+            ("Qc", "qc", 10),
             ("a", "a_nl", 9),
             ("nrmse", "nrmse", 10),
             ("Accepted", "accepted", 9),
@@ -871,6 +911,8 @@ class BatchResonanceFitMixin:
         vars_map["true_fr_ghz"].set(f"{float(payload.get('true_fr_hz', np.nan)) / _HZ_PER_GHZ:.9g}")
         vars_map["delta_fr_hz"].set(f"{float(payload.get('delta_fr_hz', np.nan)):.9g}")
         vars_map["qr"].set(f"{float(payload.get('q_loaded', np.nan)):.9g}")
+        vars_map["qi"].set(f"{float(payload.get('q_internal', np.nan)):.9g}")
+        vars_map["qc"].set(f"{float(payload.get('q_coupling', np.nan)):.9g}")
         vars_map["a_nl"].set(f"{float(payload.get('a_nl', np.nan)):.9g}")
         vars_map["nrmse"].set(f"{float(payload.get('nrmse', np.nan)):.9g}")
         accepted = payload.get("accepted")
@@ -1276,6 +1318,8 @@ class BatchResonanceFitMixin:
             ("powered fr GHz", "true_fr_ghz", 12),
             ("delta fr Hz", "delta_fr_hz", 12),
             ("Qr", "qr", 10),
+            ("Qi", "qi", 10),
+            ("Qc", "qc", 10),
             ("a", "a_nl", 9),
             ("nrmse", "nrmse", 10),
             ("Status", "status", 18),
@@ -1496,6 +1540,8 @@ class BatchResonanceFitMixin:
             vars_map["true_fr_ghz"].set(f"{float(payload.get('true_fr_hz', np.nan)) / _HZ_PER_GHZ:.9g}")
             vars_map["delta_fr_hz"].set(f"{float(payload.get('delta_fr_hz', np.nan)):.9g}")
             vars_map["qr"].set(f"{float(payload.get('q_loaded', np.nan)):.9g}")
+            vars_map["qi"].set(f"{float(payload.get('q_internal', np.nan)):.9g}")
+            vars_map["qc"].set(f"{float(payload.get('q_coupling', np.nan)):.9g}")
             vars_map["a_nl"].set(f"{float(payload.get('a_nl', np.nan)):.9g}")
             vars_map["nrmse"].set(f"{float(payload.get('nrmse', np.nan)):.9g}")
 

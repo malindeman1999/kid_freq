@@ -42,8 +42,8 @@ class AttachedResonanceEditorMixin:
         controls_row.pack(side="top", fill="x")
         action_controls = tk.Frame(controls_row)
         action_controls.pack(side="left", anchor="w")
-        number_controls = tk.Frame(controls_row)
-        number_controls.pack(side="left", anchor="w", padx=(12, 0))
+        number_controls = tk.Frame(controls)
+        number_controls.pack(side="top", fill="x", pady=(6, 0))
         self.attached_res_edit_status_var = tk.StringVar(value="Normalized selected scans will be plotted.")
         tk.Label(controls, textvariable=self.attached_res_edit_status_var, anchor="w").pack(
             side="top", fill="x", pady=(8, 0)
@@ -113,6 +113,21 @@ class AttachedResonanceEditorMixin:
             "<KeyRelease>",
             self._attached_resonance_editor_on_truncate_release,
         )
+        label_controls = tk.LabelFrame(number_controls, text="Curve labels", padx=5, pady=2)
+        label_controls.pack(side="left", padx=(10, 4))
+        self.attached_res_edit_label_mode_var = tk.StringVar(value="date")
+        for text, value in (
+            ("Date", "date"),
+            ("Temp mK", "temperature"),
+            ("Power dBm", "bias_power"),
+        ):
+            tk.Radiobutton(
+                label_controls,
+                text=text,
+                variable=self.attached_res_edit_label_mode_var,
+                value=value,
+                command=self._attached_resonance_editor_on_label_mode_changed,
+            ).pack(side="left")
         tk.Label(number_controls, text="Working #").pack(side="left", padx=(10, 4))
         self.attached_res_edit_working_number_var = tk.StringVar(value="1")
         self.attached_res_edit_working_number_spinbox = tk.Spinbox(
@@ -217,6 +232,7 @@ class AttachedResonanceEditorMixin:
         self.attached_res_edit_truncate_var = None
         self.attached_res_edit_truncate_threshold_var = None
         self.attached_res_edit_truncate_threshold_scale = None
+        self.attached_res_edit_label_mode_var = None
         self.attached_res_edit_add_button = None
         self.attached_res_edit_renumber_button = None
         self.attached_res_edit_undo_button = None
@@ -409,13 +425,14 @@ class AttachedResonanceEditorMixin:
         return rows, warnings
 
 
-    @staticmethod
     def _attached_resonance_editor_offset_map(
+        self,
         rows: list[dict],
         spacing: float,
     ) -> tuple[dict[str, float], list[tuple[float, str]]]:
         level_keys: list[tuple[str, int]] = []
         labels_by_level: dict[tuple[str, int], list[str]] = {}
+        label_mode = self._attached_resonance_editor_label_mode()
         for row in rows:
             plot_group = row.get("plot_group")
             if plot_group is None:
@@ -425,9 +442,9 @@ class AttachedResonanceEditorMixin:
             if level_key not in labels_by_level:
                 level_keys.append(level_key)
                 labels_by_level[level_key] = []
-            file_timestamp = str(getattr(row["scan"], "file_timestamp", "")).strip()
-            date_label = file_timestamp.split("T", 1)[0] if file_timestamp else "unknown date"
-            labels_by_level[level_key].append(date_label)
+            labels_by_level[level_key].append(
+                self._attached_resonance_editor_scan_label(row["scan"], label_mode)
+            )
 
         offset_by_scan_key: dict[str, float] = {}
         tick_info: list[tuple[float, str]] = []
@@ -436,7 +453,9 @@ class AttachedResonanceEditorMixin:
             offset = float((nlevels - 1 - level_pos) * spacing)
             tick_y = offset + 1.0
             label_names = labels_by_level[level_key]
-            label = label_names[0] if label_names else "unknown date"
+            label = label_names[0] if label_names else self._attached_resonance_editor_unknown_label(label_mode)
+            if len(set(label_names)) > 1:
+                label = f"{label} +{len(set(label_names)) - 1}"
             tick_info.append((tick_y, label))
             for row in rows:
                 plot_group = row.get("plot_group")
@@ -444,6 +463,46 @@ class AttachedResonanceEditorMixin:
                 if row_level_key == level_key:
                     offset_by_scan_key[str(row["scan_key"])] = offset
         return offset_by_scan_key, tick_info
+
+
+    def _attached_resonance_editor_label_mode(self) -> str:
+        var = getattr(self, "attached_res_edit_label_mode_var", None)
+        if var is None:
+            return "date"
+        mode = str(var.get()).strip()
+        if mode not in {"date", "temperature", "bias_power"}:
+            return "date"
+        return mode
+
+
+    @staticmethod
+    def _attached_resonance_editor_unknown_label(label_mode: str) -> str:
+        if label_mode == "temperature":
+            return "unknown temp"
+        if label_mode == "bias_power":
+            return "unknown power"
+        return "unknown date"
+
+
+    def _attached_resonance_editor_scan_label(self, scan: object, label_mode: str) -> str:
+        if label_mode == "temperature":
+            try:
+                value = float(getattr(scan, "temperature_mK", np.nan))
+            except Exception:
+                value = np.nan
+            return f"{value:g} mK" if np.isfinite(value) else self._attached_resonance_editor_unknown_label(label_mode)
+        if label_mode == "bias_power":
+            try:
+                value = float(getattr(scan, "bias_power_dBm", np.nan))
+            except Exception:
+                value = np.nan
+            return f"{value:g} dBm" if np.isfinite(value) else self._attached_resonance_editor_unknown_label(label_mode)
+        file_timestamp = str(getattr(scan, "file_timestamp", "")).strip()
+        return file_timestamp.split("T", 1)[0] if file_timestamp else self._attached_resonance_editor_unknown_label(label_mode)
+
+
+    def _attached_resonance_editor_on_label_mode_changed(self) -> None:
+        self._render_attached_resonance_editor()
 
 
     @staticmethod

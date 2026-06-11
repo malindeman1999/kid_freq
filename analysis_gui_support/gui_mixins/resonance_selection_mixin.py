@@ -136,6 +136,8 @@ class ResonanceSelectionMixin:
         true_var = getattr(self, "res_true_fr_var", None)
         delta_var = getattr(self, "res_delta_fr_var", None)
         nrmse_var = getattr(self, "res_nrmse_var", None)
+        qi_var = getattr(self, "res_qi_output_var", None)
+        qc_var = getattr(self, "res_qc_output_var", None)
         if payload is None:
             if true_var is not None:
                 true_var.set("")
@@ -143,16 +145,26 @@ class ResonanceSelectionMixin:
                 delta_var.set("")
             if nrmse_var is not None:
                 nrmse_var.set("")
+            if qi_var is not None:
+                qi_var.set("")
+            if qc_var is not None:
+                qc_var.set("")
             return
         true_fr = payload.get("true_fr_hz")
         delta_fr = payload.get("delta_fr_hz")
         nrmse = payload.get("nrmse")
+        qi = payload.get("q_internal")
+        qc = payload.get("q_coupling")
         if true_var is not None:
             true_var.set("" if true_fr is None else f"{float(true_fr) / _HZ_PER_GHZ:.9g}")
         if delta_var is not None:
             delta_var.set("" if delta_fr is None else f"{float(delta_fr):.9g}")
         if nrmse_var is not None:
             nrmse_var.set("" if nrmse is None else f"{float(nrmse):.9g}")
+        if qi_var is not None:
+            qi_var.set("" if qi is None else f"{float(qi):.9g}")
+        if qc_var is not None:
+            qc_var.set("" if qc is None else f"{float(qc):.9g}")
 
     def _res_get_logan_params_from_fields(self, *, lo: float, hi: float) -> np.ndarray:
         fr_hz = float(self.res_fr_var.get()) * _HZ_PER_GHZ if self.res_fr_var is not None else 0.5 * (lo + hi)
@@ -656,6 +668,8 @@ class ResonanceSelectionMixin:
         self.res_true_fr_var = tk.StringVar()
         self.res_delta_fr_var = tk.StringVar()
         self.res_nrmse_var = tk.StringVar()
+        self.res_qi_output_var = tk.StringVar()
+        self.res_qc_output_var = tk.StringVar()
         self.res_fix_a_mag_var = tk.BooleanVar(value=True)
         self.res_fix_tau_var = tk.BooleanVar(value=True)
         tk.Label(controls, text="fr0 (GHz)").pack(side="left", padx=(12, 2))
@@ -684,6 +698,10 @@ class ResonanceSelectionMixin:
         tk.Entry(controls, textvariable=self.res_delta_fr_var, width=12, state="readonly").pack(side="left")
         tk.Label(controls, text="nrmse").pack(side="left", padx=(8, 2))
         tk.Entry(controls, textvariable=self.res_nrmse_var, width=10, state="readonly").pack(side="left")
+        tk.Label(controls, text="Qi").pack(side="left", padx=(8, 2))
+        tk.Entry(controls, textvariable=self.res_qi_output_var, width=10, state="readonly").pack(side="left")
+        tk.Label(controls, text="Qc").pack(side="left", padx=(8, 2))
+        tk.Entry(controls, textvariable=self.res_qc_output_var, width=10, state="readonly").pack(side="left")
 
         self.res_status_var = tk.StringVar(
             value="Use toolbar zoom to select a raw S21 frequency span."
@@ -1143,6 +1161,8 @@ class ResonanceSelectionMixin:
         self.res_true_fr_var = None
         self.res_delta_fr_var = None
         self.res_nrmse_var = None
+        self.res_qi_output_var = None
+        self.res_qc_output_var = None
         self.res_fix_fr_var = None
         self.res_fix_qi_var = None
         self.res_fix_qc_var = None
