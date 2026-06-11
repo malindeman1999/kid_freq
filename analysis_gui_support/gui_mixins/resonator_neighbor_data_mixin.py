@@ -47,10 +47,13 @@ class ResonatorNeighborDataMixin:
 
 
 
-    def _resonator_shift_test_units(self) -> list[dict]:
+    def _resonator_shift_test_units(self, frequency_source: str = "markers") -> list[dict]:
         scans = self._selected_scans()
         if not scans:
             raise ValueError("No scans are selected for analysis.")
+        frequency_source = str(frequency_source or "markers").strip().lower()
+        if frequency_source not in {"markers", "accepted_fr0"}:
+            frequency_source = "markers"
 
         units_by_key: dict[tuple[str, object], dict] = {}
         ordered_keys: list[tuple[str, object]] = []
@@ -111,6 +114,11 @@ class ResonatorNeighborDataMixin:
             else:
                 unit["missing_bias_power"] = True
 
+            fit_payload = scan.candidate_resonators.get("logan_nonlinear_iq_marker_fits")
+            fit_assignments = fit_payload.get("assignments") if isinstance(fit_payload, dict) else {}
+            if not isinstance(fit_assignments, dict):
+                fit_assignments = {}
+
             freq = np.asarray(scan.freq, dtype=float)
             if freq.size == 0:
                 continue
@@ -121,13 +129,25 @@ class ResonatorNeighborDataMixin:
                 if not isinstance(record, dict):
                     continue
                 try:
-                    target_hz = float(record.get("frequency_hz"))
+                    marker_hz = float(record.get("frequency_hz"))
                 except Exception:
                     continue
-                if not np.isfinite(target_hz) or not (freq_min <= target_hz <= freq_max):
+                if not np.isfinite(marker_hz) or not (freq_min <= marker_hz <= freq_max):
                     continue
                 resonator_label = str(resonator_number).strip()
                 if not resonator_label:
+                    continue
+                if frequency_source == "accepted_fr0":
+                    fit_record = fit_assignments.get(resonator_label)
+                    if not isinstance(fit_record, dict) or not bool(fit_record.get("accepted", False)):
+                        continue
+                    try:
+                        target_hz = float(fit_record.get("fr0_hz"))
+                    except Exception:
+                        continue
+                else:
+                    target_hz = marker_hz
+                if not np.isfinite(target_hz) or not (freq_min <= target_hz <= freq_max):
                     continue
                 resonator_lists.setdefault(resonator_label, []).append(target_hz)
 
@@ -165,6 +185,7 @@ class ResonatorNeighborDataMixin:
                     "missing_temperature": bool(unit.get("missing_temperature", False)),
                     "bias_power_dBm": bias_power_dbm,
                     "missing_bias_power": bool(unit.get("missing_bias_power", False)),
+                    "frequency_source": frequency_source,
                     "resonators": resonators,
                 }
             )
@@ -190,9 +211,17 @@ class ResonatorNeighborDataMixin:
         self,
         max_neighbor_sep_rel: float,
         initial_date_text: str = "",
+        frequency_source: str = "markers",
     ) -> dict:
-        tests = self._resonator_shift_test_units()
+        frequency_source = str(frequency_source or "markers").strip().lower()
+        if frequency_source not in {"markers", "accepted_fr0"}:
+            frequency_source = "markers"
+        tests = self._resonator_shift_test_units(frequency_source=frequency_source)
         if len(tests) < 2:
+            if frequency_source == "accepted_fr0":
+                raise ValueError(
+                    "At least two selected test dates with accepted fr0 fits are required."
+                )
             raise ValueError("At least two selected test dates with marked resonators are required.")
 
         dated_tests = [test for test in tests if test.get("timestamp_dt") is not None]
@@ -226,6 +255,8 @@ class ResonatorNeighborDataMixin:
             key=lambda label: (mean_freq_by_resonator[label], self._resonator_sort_key(label)),
         )
         if len(ordered_labels) < 2:
+            if frequency_source == "accepted_fr0":
+                raise ValueError("Need at least two resonators with accepted fr0 fits to build neighboring pairs.")
             raise ValueError("Need at least two marked resonators to build neighboring pairs.")
 
         threshold_rel = max(0.0, float(max_neighbor_sep_rel))
@@ -281,6 +312,10 @@ class ResonatorNeighborDataMixin:
             )
 
         if not pair_series:
+            if frequency_source == "accepted_fr0":
+                raise ValueError(
+                    "No adjacent resonator pairs met the relative df/f threshold with at least two dated accepted fr0 fits."
+                )
             raise ValueError(
                 "No adjacent resonator pairs met the relative df/f threshold with at least two dated measurements."
             )
@@ -294,6 +329,7 @@ class ResonatorNeighborDataMixin:
             "pair_series": pair_series,
             "mean_pair_freqs_hz": mean_pair_freqs_hz,
             "threshold_rel": float(max_neighbor_sep_rel),
+            "frequency_source": frequency_source,
             "elapsed_time_origin": base_time,
             "elapsed_time_origin_source": "initial_date" if initial_time is not None else "first_dataset",
         }
@@ -313,8 +349,17 @@ class ResonatorNeighborDataMixin:
 
 
 
-    def _resonator_neighbor_scan_overlay_state(self, threshold_rel: float, initial_date_text: str = "") -> dict:
-        data = self._resonator_neighbor_dfrel_data(threshold_rel, initial_date_text=initial_date_text)
+    def _resonator_neighbor_scan_overlay_state(
+        self,
+        threshold_rel: float,
+        initial_date_text: str = "",
+        frequency_source: str = "markers",
+    ) -> dict:
+        data = self._resonator_neighbor_dfrel_data(
+            threshold_rel,
+            initial_date_text=initial_date_text,
+            frequency_source=frequency_source,
+        )
         norm, cmap = self._resonator_neighbor_pair_colors(data)
         pair_series = data["pair_series"]
 

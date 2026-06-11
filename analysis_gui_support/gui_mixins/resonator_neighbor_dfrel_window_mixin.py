@@ -40,6 +40,7 @@ class ResonatorNeighborDfrelWindowMixin:
         self.res_neighbor_dfrel_show_iqr_var = tk.BooleanVar(value=True)
         self.res_neighbor_dfrel_mode_var = tk.StringVar(value="drift")
         self.res_neighbor_dfrel_xaxis_mode_var = tk.StringVar(value="elapsed")
+        self.res_neighbor_dfrel_frequency_source_var = tk.StringVar(value="markers")
         self.res_neighbor_dfrel_initial_date_var = tk.StringVar(value=self._dataset_res_neighbor_initial_date())
 
         tk.Label(control_row, text="Initial Date").pack(side="left", padx=(0, 4))
@@ -71,71 +72,91 @@ class ResonatorNeighborDfrelWindowMixin:
             "<ButtonRelease-1>",
             self._on_res_neighbor_dfrel_sep_scale_release,
         )
+        mode_row = tk.Frame(controls)
+        mode_row.pack(side="top", fill="x", anchor="w", pady=(6, 0))
         tk.Radiobutton(
-            control_row,
+            mode_row,
             text="Mean +/- Std Spacing",
             value="drift",
             variable=self.res_neighbor_dfrel_mode_var,
             command=self._render_resonator_neighbor_dfrel_window,
         ).pack(side="left", padx=(0, 8))
         tk.Radiobutton(
-            control_row,
+            mode_row,
             text="Spacing Displacement",
             value="change",
             variable=self.res_neighbor_dfrel_mode_var,
             command=self._render_resonator_neighbor_dfrel_window,
         ).pack(side="left", padx=(0, 8))
         tk.Radiobutton(
-            control_row,
+            mode_row,
             text="Spacing",
             value="spacing",
             variable=self.res_neighbor_dfrel_mode_var,
             command=self._render_resonator_neighbor_dfrel_window,
         ).pack(side="left", padx=(0, 8))
-        tk.Label(control_row, text="X-Axis").pack(side="left", padx=(8, 4))
+        tk.Label(mode_row, text="X-Axis").pack(side="left", padx=(8, 4))
         tk.Radiobutton(
-            control_row,
+            mode_row,
             text="Elapsed Time",
             value="elapsed",
             variable=self.res_neighbor_dfrel_xaxis_mode_var,
             command=self._render_resonator_neighbor_dfrel_window,
         ).pack(side="left", padx=(0, 6))
         tk.Radiobutton(
-            control_row,
+            mode_row,
             text="Date",
             value="date",
             variable=self.res_neighbor_dfrel_xaxis_mode_var,
             command=self._render_resonator_neighbor_dfrel_window,
         ).pack(side="left", padx=(0, 8))
         tk.Radiobutton(
-            control_row,
+            mode_row,
             text="Temperature",
             value="temperature",
             variable=self.res_neighbor_dfrel_xaxis_mode_var,
             command=self._render_resonator_neighbor_dfrel_window,
         ).pack(side="left", padx=(0, 8))
         tk.Radiobutton(
-            control_row,
+            mode_row,
             text="Drive Power",
             value="power",
             variable=self.res_neighbor_dfrel_xaxis_mode_var,
             command=self._render_resonator_neighbor_dfrel_window,
         ).pack(side="left", padx=(0, 8))
+
+        source_row = tk.Frame(controls)
+        source_row.pack(side="top", fill="x", anchor="w", pady=(6, 0))
+        tk.Label(source_row, text="Frequency Source").pack(side="left", padx=(0, 4))
+        tk.Radiobutton(
+            source_row,
+            text="Marked resonator frequency",
+            value="markers",
+            variable=self.res_neighbor_dfrel_frequency_source_var,
+            command=self._render_resonator_neighbor_dfrel_window,
+        ).pack(side="left", padx=(0, 8))
+        tk.Radiobutton(
+            source_row,
+            text="Accepted fit fr0",
+            value="accepted_fr0",
+            variable=self.res_neighbor_dfrel_frequency_source_var,
+            command=self._render_resonator_neighbor_dfrel_window,
+        ).pack(side="left", padx=(0, 12))
         tk.Checkbutton(
-            control_row,
+            source_row,
             text="Summary Band",
             variable=self.res_neighbor_dfrel_show_iqr_var,
             command=self._render_resonator_neighbor_dfrel_window,
         ).pack(side="left", padx=(0, 12))
-        tk.Button(control_row, text="Show On Scans", width=13, command=self.open_resonator_neighbor_scan_window).pack(
+        tk.Button(source_row, text="Show On Scans", width=13, command=self.open_resonator_neighbor_scan_window).pack(
             side="left",
             padx=(0, 8),
         )
-        tk.Button(control_row, text="Top 10 Rates", width=12, command=self.open_resonator_neighbor_top_rates_window).pack(
+        tk.Button(source_row, text="Top 10 Rates", width=12, command=self.open_resonator_neighbor_top_rates_window).pack(
             side="left",
             padx=(0, 8),
         )
-        tk.Button(control_row, text="Refresh", width=10, command=self._render_resonator_neighbor_dfrel_window).pack(
+        tk.Button(source_row, text="Refresh", width=10, command=self._render_resonator_neighbor_dfrel_window).pack(
             side="left",
             padx=(0, 8),
         )
@@ -181,6 +202,7 @@ class ResonatorNeighborDfrelWindowMixin:
         self.res_neighbor_dfrel_show_iqr_var = None
         self.res_neighbor_dfrel_mode_var = None
         self.res_neighbor_dfrel_xaxis_mode_var = None
+        self.res_neighbor_dfrel_frequency_source_var = None
         self.res_neighbor_dfrel_initial_date_var = None
         self.res_neighbor_dfrel_sep_scale = None
         self._res_neighbor_dfrel_sep_changed = False
@@ -192,6 +214,15 @@ class ResonatorNeighborDfrelWindowMixin:
         changed = self._sync_res_neighbor_sep_rel(autosave=False)
         if changed:
             self._res_neighbor_dfrel_sep_changed = True
+
+
+    def _res_neighbor_dfrel_frequency_source(self) -> str:
+        source = (
+            str(self.res_neighbor_dfrel_frequency_source_var.get())
+            if self.res_neighbor_dfrel_frequency_source_var is not None
+            else "markers"
+        ).strip().lower()
+        return source if source in {"markers", "accepted_fr0"} else "markers"
 
 
 
@@ -262,6 +293,7 @@ class ResonatorNeighborDfrelWindowMixin:
             if self.res_neighbor_dfrel_initial_date_var is not None
             else ""
         )
+        frequency_source = self._res_neighbor_dfrel_frequency_source()
         mode = (
             str(self.res_neighbor_dfrel_mode_var.get())
             if self.res_neighbor_dfrel_mode_var is not None
@@ -284,6 +316,7 @@ class ResonatorNeighborDfrelWindowMixin:
         overlay_state = self._resonator_neighbor_scan_overlay_state(
             threshold_rel,
             initial_date_text=initial_date_text,
+            frequency_source=frequency_source,
         )
         if xaxis_mode == "temperature":
             missing_temperature = [
@@ -412,8 +445,13 @@ class ResonatorNeighborDfrelWindowMixin:
                 if self.res_neighbor_dfrel_mode_var is not None
                 else "drift"
             ).strip().lower()
+            source_text = (
+                "accepted fit fr0"
+                if self._res_neighbor_dfrel_frequency_source() == "accepted_fr0"
+                else "marked resonator frequency"
+            )
             self.res_neighbor_top_rates_status_var.set(
-                f"Showing top {len(rows)} of {int(total_count)} neighboring pair interval rate(s), sorted by |rate| descending (mode: {mode}, x-axis: {'temperature' if is_temp else 'drive power' if is_power else 'time'})."
+                f"Showing top {len(rows)} of {int(total_count)} neighboring pair interval rate(s), sorted by |rate| descending (mode: {mode}, x-axis: {'temperature' if is_temp else 'drive power' if is_power else 'time'}, source: {source_text})."
             )
 
 
@@ -436,10 +474,12 @@ class ResonatorNeighborDfrelWindowMixin:
             if self.res_neighbor_dfrel_initial_date_var is not None
             else ""
         )
+        frequency_source = self._res_neighbor_dfrel_frequency_source()
         try:
             overlay_state = self._resonator_neighbor_scan_overlay_state(
                 threshold_rel,
                 initial_date_text=initial_date_text,
+                frequency_source=frequency_source,
             )
         except Exception as exc:
             ax.text(0.5, 0.5, str(exc), ha="center", va="center", transform=ax.transAxes)
@@ -450,6 +490,7 @@ class ResonatorNeighborDfrelWindowMixin:
             return
 
         data = overlay_state["data"]
+        frequency_source = str(data.get("frequency_source", frequency_source))
         mode = (
             str(self.res_neighbor_dfrel_mode_var.get())
             if self.res_neighbor_dfrel_mode_var is not None
@@ -855,6 +896,12 @@ class ResonatorNeighborDfrelWindowMixin:
                 origin_prefix = "X-axis: VNA drive power. "
             else:
                 origin_prefix = f"Elapsed-time origin: {origin_text}. "
+            source_text = (
+                "Frequency source: accepted fit fr0. "
+                if frequency_source == "accepted_fr0"
+                else "Frequency source: marked resonator frequency. "
+            )
+            origin_prefix = source_text + origin_prefix
             if mode == "drift":
                 summary_text = " Summary overlay: grey band = mean +/- 1 std; colored traces = individual pair drift rates." if show_iqr else ""
                 point_text = (
@@ -894,6 +941,7 @@ class ResonatorNeighborDfrelWindowMixin:
     ) -> dict:
         data = overlay_state["data"]
         pair_series = data["pair_series"]
+        frequency_source = str(data.get("frequency_source", "markers"))
         resonator_colors = overlay_state["resonator_colors"]
         neutral_color = (0.45, 0.45, 0.45, 1.0)
         offset_by_scan_key, tick_info = self._attached_resonance_editor_offset_map(rows, spacing)
@@ -914,7 +962,7 @@ class ResonatorNeighborDfrelWindowMixin:
             ax.plot(freq_ghz, y, linewidth=1.0, color="tab:blue", alpha=0.8, zorder=1)
 
             row_points: dict[str, dict] = {}
-            for resonator in row["resonators"]:
+            for resonator in self._resonator_neighbor_overlay_resonators_for_source(row, frequency_source):
                 resonator_label = str(resonator["resonator_number"])
                 target_hz = float(resonator["target_hz"])
                 target_ghz = target_hz / 1.0e9
@@ -1033,6 +1081,40 @@ class ResonatorNeighborDfrelWindowMixin:
         }
 
 
+    @staticmethod
+    def _resonator_neighbor_overlay_resonators_for_source(row: dict, frequency_source: str) -> list[dict]:
+        if frequency_source != "accepted_fr0":
+            return list(row.get("resonators", []))
+        scan = row.get("scan")
+        if scan is None:
+            return []
+        fit_payload = scan.candidate_resonators.get("logan_nonlinear_iq_marker_fits")
+        fit_assignments = fit_payload.get("assignments") if isinstance(fit_payload, dict) else {}
+        if not isinstance(fit_assignments, dict):
+            return []
+        freq = np.asarray(row.get("freq", []), dtype=float)
+        if freq.size == 0:
+            return []
+        f_min = float(np.min(freq))
+        f_max = float(np.max(freq))
+        resonators: list[dict] = []
+        for marker in row.get("resonators", []):
+            resonator_number = str(marker.get("resonator_number", "")).strip()
+            if not resonator_number:
+                continue
+            fit_record = fit_assignments.get(resonator_number)
+            if not isinstance(fit_record, dict) or not bool(fit_record.get("accepted", False)):
+                continue
+            try:
+                target_hz = float(fit_record.get("fr0_hz"))
+            except Exception:
+                continue
+            if not np.isfinite(target_hz) or not (f_min <= target_hz <= f_max):
+                continue
+            resonators.append({"resonator_number": resonator_number, "target_hz": target_hz})
+        return sorted(resonators, key=lambda item: float(item["target_hz"]))
+
+
 
     def open_resonator_neighbor_scan_window(self, source: str = "dfrel") -> None:
         self._res_neighbor_scan_source = str(source or "dfrel").strip().lower()
@@ -1119,6 +1201,7 @@ class ResonatorNeighborDfrelWindowMixin:
             overlay_state = self._resonator_neighbor_scan_overlay_state(
                 threshold_rel,
                 initial_date_text=initial_date_text,
+                frequency_source=self._res_neighbor_dfrel_frequency_source(),
             )
         except Exception as exc:
             ax.text(0.5, 0.5, str(exc), ha="center", va="center", transform=ax.transAxes)
@@ -1138,9 +1221,14 @@ class ResonatorNeighborDfrelWindowMixin:
 
         self.res_neighbor_scan_figure.tight_layout()
         if self.res_neighbor_scan_status_var is not None:
+            source_text = (
+                "accepted fit fr0"
+                if str(data.get("frequency_source", "markers")) == "accepted_fr0"
+                else "marked resonator frequency"
+            )
             status = (
                 f"Showing {int(draw_stats['marker_count'])} marker(s), {len(data['pair_series'])} active neighboring pair(s), and "
-                f"{int(draw_stats['connector_count'])} pair quadrilateral region(s); threshold {threshold_rel:.4f} df/f."
+                f"{int(draw_stats['connector_count'])} pair quadrilateral region(s); source: {source_text}; threshold {threshold_rel:.4f} df/f."
             )
             if warnings:
                 status += " Missing normalized data for: " + ", ".join(warnings[:6])
@@ -1162,6 +1250,7 @@ class ResonatorNeighborDfrelWindowMixin:
             overlay_state = self._resonator_neighbor_scan_overlay_state(
                 threshold_rel,
                 initial_date_text=initial_date_text,
+                frequency_source=self._res_neighbor_dfrel_frequency_source(),
             )
         except Exception as exc:
             messagebox.showerror("Cannot save PDF", str(exc), parent=self.res_neighbor_scan_window)

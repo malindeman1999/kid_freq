@@ -590,6 +590,7 @@ class DataAnalysisGUI(
         right_button_specs.append({"text": "Fit Marked Resonators", "command": self.open_batch_resonance_fit_window})
         right_button_specs.append({"text": "Rank Resonator Fits", "command": self.open_resonance_fit_quality_window})
         right_button_specs.append({"text": "Check Fit Offsets", "command": self.open_resonance_fit_offset_window})
+        right_button_specs.append({"text": "Fit Params vs Date", "command": self.open_accepted_fit_parameter_date_window})
         right_button_specs.append({"text": "Mark Res. on Sel. Scans", "command": self.open_attached_resonance_editor})
         right_button_specs.append({"text": "Clear All Res. Markers", "command": self.clear_all_resonator_markers})
         right_button_specs.append({"text": "Link Gaussian Minima", "command": self.open_link_gaussian_minima_window})

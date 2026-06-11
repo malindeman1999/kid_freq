@@ -209,7 +209,7 @@ class ResonanceSelectionMixin:
                 field.set("")
         self.res_model_preview = None
         self._res_set_logan_output_fields(None)
-        self._res_set_status("Cleared Logan parameters. Next fit will guess from the visible raw S21 window.", "dark green")
+        self._res_set_status("Cleared fit parameters. Next fit will guess from the visible raw S21 window.", "dark green")
         self._res_render()
 
     def _res_guess_logan_params(self, scan, mask: np.ndarray, lo: float, hi: float) -> np.ndarray:
@@ -320,7 +320,7 @@ class ResonanceSelectionMixin:
         if scan is None:
             return
         if nonlinear_iq is None:
-            self._res_set_status("citkid.res is unavailable; cannot plot the Logan model.", "dark orange")
+            self._res_set_status("citkid.res is unavailable; cannot plot the nonlinear IQ model.", "dark orange")
             return
         freq = np.asarray(scan.freq, dtype=float)
         (lo, hi), mask = self._res_get_selection_mask(freq)
@@ -353,9 +353,9 @@ class ResonanceSelectionMixin:
                 model=model,
                 f_fit=f_fit,
                 success=True,
-                message="Displayed current Logan model parameters.",
+                message="Displayed current nonlinear IQ model parameters.",
             )
-            self._res_set_status("Displayed current Logan model parameters.", "dark green")
+            self._res_set_status("Displayed current nonlinear IQ model parameters.", "dark green")
             self._res_render()
         except Exception as exc:
             self._res_set_status(f"Model plot failed: {exc}", "dark orange")
@@ -382,7 +382,7 @@ class ResonanceSelectionMixin:
         if scan is None:
             return
         if guess_p0_nonlinear_iq is None:
-            self._res_set_status("citkid.res is unavailable; cannot guess Logan parameters.", "dark orange")
+            self._res_set_status("citkid.res is unavailable; cannot guess fit parameters.", "dark orange")
             return
         freq = np.asarray(scan.freq, dtype=float)
         (lo, hi), mask = self._res_get_selection_mask(freq)
@@ -393,7 +393,7 @@ class ResonanceSelectionMixin:
         p0 = self._res_guess_logan_params(scan, mask, lo, hi)
         self._res_set_logan_model_fields(p0)
         self.res_model_preview = None
-        self._res_set_status("Reset Logan parameters from the raw selected span.", "dark green")
+        self._res_set_status("Reset fit parameters from the raw selected span.", "dark green")
         self._res_render()
 
     def _res_current_fit(self, scan) -> Optional[dict]:
@@ -435,7 +435,7 @@ class ResonanceSelectionMixin:
         fit_tau = bool(self.res_fix_tau_var.get()) if self.res_fix_tau_var is not None else True
         downward = self._res_logan_downward()
 
-        self._res_set_busy(True, "Fitting Logan nonlinear IQ model...")
+        self._res_set_busy(True, "Fitting nonlinear IQ model...")
         try:
             p0_out, popt, perr, nrmse, _figax = fit_nonlinear_iq(
                 f_fit,
@@ -460,7 +460,7 @@ class ResonanceSelectionMixin:
                 model=model,
                 f_fit=f_fit,
                 success=True,
-                message="Logan nonlinear IQ fit complete.",
+                message="Nonlinear IQ fit complete.",
             )
             scan.candidate_resonators["logan_nonlinear_iq_fit"] = fit_payload
             self.res_model_preview = fit_payload
@@ -495,7 +495,7 @@ class ResonanceSelectionMixin:
             true_fr = fit_payload.get("true_fr_hz", np.nan)
             delta_fr = fit_payload.get("delta_fr_hz", np.nan)
             self._log(
-                f"Fitted Logan nonlinear IQ model: fr0={popt[0] / _HZ_PER_GHZ:.9g} GHz, "
+                f"Fitted nonlinear IQ model: fr0={popt[0] / _HZ_PER_GHZ:.9g} GHz, "
                 f"powered_fr={float(true_fr) / _HZ_PER_GHZ:.9g} GHz, delta_fr={float(delta_fr):.4g} Hz, "
                 f"Qr={popt[1]:.4g}, amp={popt[2]:.4g}, phi={np.degrees(popt[3]):.4g} deg, "
                 f"a={popt[4]:.4g}, nrmse={float(nrmse):.4g}."
@@ -631,7 +631,7 @@ class ResonanceSelectionMixin:
             self._res_close()
 
         self.res_window = tk.Toplevel(self.root)
-        self.res_window.title("Logan Resonance Fit")
+        self.res_window.title("Resonance Fit")
         self.res_window.geometry("1250x780")
         self.res_window.protocol("WM_DELETE_WINDOW", self._res_close)
 
@@ -643,7 +643,7 @@ class ResonanceSelectionMixin:
             anchor="w",
         ).pack(side="left", fill="x", expand=True)
         tk.Button(top, text="Choose Scan", command=self.open_resonance_selection_window).pack(side="right")
-        self.res_fit_button = tk.Button(top, text="Fit Logan Model", command=self._res_fit_displayed_data)
+        self.res_fit_button = tk.Button(top, text="Fit Model", command=self._res_fit_displayed_data)
         self.res_fit_button.pack(side="right", padx=(0, 8))
         tk.Button(top, text="Clear Params", command=self._res_clear_logan_params).pack(side="right", padx=(0, 8))
         tk.Button(top, text="Reset View", command=self._res_reset_view).pack(side="right", padx=(0, 8))
@@ -952,7 +952,7 @@ class ResonanceSelectionMixin:
     def _res_render(self) -> None:
         if self.res_figure is None or self.res_canvas is None:
             return
-        self._res_set_busy(True, "Rendering raw Logan fit plot...")
+        self._res_set_busy(True, "Rendering raw fit plot...")
         scan = self._res_get_scan()
         try:
             if scan is None:
@@ -1062,7 +1062,7 @@ class ResonanceSelectionMixin:
                         color="darkorange",
                         linewidth=1.4,
                         linestyle="--",
-                        label="Logan fit",
+                        label="fit",
                     )
                     if fit_freq.size:
                         fr_idx = int(np.argmin(np.abs(fit_freq - fr0_hz)))
@@ -1091,7 +1091,7 @@ class ResonanceSelectionMixin:
                         color="darkorange",
                         linewidth=1.2,
                         linestyle="--",
-                        label="Logan fit",
+                        label="fit",
                     )
                     if fit_freq.size:
                         ax_iq.plot(
