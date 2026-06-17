@@ -407,7 +407,7 @@ class BatchResonanceFitMixin:
         ).pack(anchor="w")
         tk.Radiobutton(
             x_frame,
-            text="bias power",
+            text="drive power",
             variable=self.res_fit_offset_x_var,
             value="bias_power",
             command=self._res_fit_offset_render,
@@ -494,7 +494,7 @@ class BatchResonanceFitMixin:
         self.res_fit_offset_connect_resonators_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
             option_row,
-            text="Connect same resonator by increasing bias power",
+            text="Connect same resonator by increasing drive power",
             variable=self.res_fit_offset_connect_resonators_var,
             command=self._res_fit_offset_render,
         ).pack(side="left")
@@ -664,7 +664,7 @@ class BatchResonanceFitMixin:
             x_label = "True offset / reference fr0"
         elif x_mode == "bias_power":
             x = bias_power_values
-            x_label = "Bias power (dBm)"
+            x_label = "Drive power (dBm)"
         else:
             x = reference_fr0 / _HZ_PER_GHZ
             x_label = "Reference fr0 from lowest-power scan (GHz)"
