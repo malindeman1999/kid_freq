@@ -19,6 +19,742 @@ from .resonance_selection_mixin import _HZ_PER_GHZ, fit_nonlinear_iq, guess_p0_n
 
 
 class BatchResonanceFitMixin:
+    @staticmethod
+    def _tls_qi_power_dbm_to_watts(power_dbm: np.ndarray) -> np.ndarray:
+        return 1.0e-3 * np.power(10.0, np.asarray(power_dbm, dtype=float) / 10.0)
+
+    @staticmethod
+    def _tls_qi_power_loss_model(power_w: np.ndarray, qother: float, a_tls: float, pc_w: float, beta: float) -> np.ndarray:
+        power = np.asarray(power_w, dtype=float)
+        qother = max(float(qother), 1.0)
+        a_tls = max(float(a_tls), 0.0)
+        pc_w = max(float(pc_w), np.finfo(float).tiny)
+        beta = max(float(beta), 1.0e-6)
+        with np.errstate(over="ignore", invalid="ignore"):
+            sat = np.sqrt(1.0 + np.power(np.maximum(power, 0.0) / pc_w, beta))
+            return (1.0 / qother) + (a_tls / sat)
+
+    @staticmethod
+    def _tls_qi_power_qi_model(power_w: np.ndarray, qother: float, a_tls: float, pc_w: float, beta: float) -> np.ndarray:
+        loss = BatchResonanceFitMixin._tls_qi_power_loss_model(power_w, qother, a_tls, pc_w, beta)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return 1.0 / loss
+
+    def open_tls_qi_power_fit_window(self) -> None:
+        scans = self._selected_scans()
+        if not scans:
+            messagebox.showwarning(
+                "No selection",
+                "No scans selected for analysis.\nUse 'Select Scans for Analysis' first.",
+            )
+            return
+
+        groups, stats = self._tls_qi_power_collect_groups(scans)
+        if not groups:
+            messagebox.showwarning(
+                "No TLS fit inputs",
+                "No selected scans had accepted resonator fits with finite Qi and finite drive power.\n\n"
+                "Run/accept resonator fits and update drive powers first.",
+            )
+            return
+
+        if (
+            getattr(self, "tls_qi_power_window", None) is not None
+            and self.tls_qi_power_window.winfo_exists()
+        ):
+            self.tls_qi_power_groups = groups
+            self.tls_qi_power_results = {}
+            self.tls_qi_power_window.lift()
+            self._tls_qi_power_reset_slider()
+            self._tls_qi_power_render_selected()
+            return
+
+        self.tls_qi_power_groups = groups
+        self.tls_qi_power_results = {}
+        self.tls_qi_power_window = tk.Toplevel(self.root)
+        self.tls_qi_power_window.title("TLS Qi vs Drive Power")
+        self.tls_qi_power_window.geometry("1320x880")
+        self.tls_qi_power_window.protocol("WM_DELETE_WINDOW", self._tls_qi_power_close)
+
+        controls = tk.Frame(self.tls_qi_power_window, padx=8, pady=6)
+        controls.pack(side="top", fill="x")
+        top_row = tk.Frame(controls)
+        top_row.pack(side="top", fill="x")
+        self.tls_qi_power_status_var = tk.StringVar(
+            value=(
+                f"Ready: {len(groups)} resonator(s), {stats['point_count']} accepted Qi point(s). "
+                f"Skipped {stats['skipped_no_power']} without drive power, {stats['skipped_invalid']} invalid."
+            )
+        )
+        tk.Label(top_row, textvariable=self.tls_qi_power_status_var, anchor="w").pack(
+            side="left", fill="x", expand=True
+        )
+        tk.Button(top_row, text="Fit", width=10, command=self._tls_qi_power_run).pack(side="right", padx=(8, 0))
+        tk.Button(top_row, text="Attach Results", width=14, command=self._tls_qi_power_confirm_attach).pack(
+            side="right", padx=(8, 0)
+        )
+
+        nav_row = tk.Frame(controls)
+        nav_row.pack(side="top", fill="x", pady=(6, 0))
+        tk.Label(nav_row, text="Resonator").pack(side="left", padx=(0, 6))
+        self.tls_qi_power_res_index_var = tk.IntVar(value=0)
+        self.tls_qi_power_res_slider = tk.Scale(
+            nav_row,
+            from_=0,
+            to=max(0, len(groups) - 1),
+            orient="horizontal",
+            length=300,
+            showvalue=True,
+            variable=self.tls_qi_power_res_index_var,
+            command=lambda _v: self._tls_qi_power_on_res_slider_changed(),
+        )
+        self.tls_qi_power_res_slider.pack(side="left")
+        self.tls_qi_power_res_slider.bind("<ButtonRelease-1>", lambda _e: self._tls_qi_power_render_selected())
+        tk.Label(nav_row, text="Fits").pack(side="left", padx=(18, 4))
+        self.tls_qi_power_progress = ttk.Progressbar(nav_row, orient="horizontal", length=240, mode="determinate")
+        self.tls_qi_power_progress.pack(side="left")
+
+        output_row = tk.Frame(controls)
+        output_row.pack(side="top", fill="x", pady=(6, 0))
+        self.tls_qi_power_output_vars = {}
+        for label, key, width in (
+            ("Res #", "resonator_number", 8),
+            ("Points", "point_count", 7),
+            ("A", "a_tls", 12),
+            ("beta", "beta", 9),
+            ("Qother", "qother", 12),
+            ("Pc dBm", "pc_dbm", 10),
+            ("Pc W", "pc_w", 12),
+            ("loss nrmse", "nrmse", 11),
+            ("Status", "status", 24),
+        ):
+            tk.Label(output_row, text=label).pack(side="left", padx=(0, 2))
+            var = tk.StringVar()
+            self.tls_qi_power_output_vars[key] = var
+            tk.Entry(output_row, textvariable=var, width=width, state="readonly").pack(side="left", padx=(0, 6))
+
+        param_row = tk.Frame(controls)
+        param_row.pack(side="top", fill="x", pady=(6, 0))
+        self.tls_qi_power_param_vars = {
+            "log10_a_tls": tk.DoubleVar(value=-6.0),
+            "beta": tk.DoubleVar(value=0.5),
+            "log10_qother": tk.DoubleVar(value=6.0),
+            "pc_dbm": tk.DoubleVar(value=-60.0),
+        }
+        for label, key, lo, hi, resolution in (
+            ("log10 A", "log10_a_tls", -12.0, -2.0, 0.01),
+            ("beta", "beta", 0.05, 4.0, 0.01),
+            ("log10 Qother", "log10_qother", 3.0, 9.0, 0.01),
+            ("Pc dBm", "pc_dbm", -120.0, 20.0, 0.1),
+        ):
+            tk.Label(param_row, text=label).pack(side="left", padx=(0, 4))
+            tk.Scale(
+                param_row,
+                from_=lo,
+                to=hi,
+                resolution=resolution,
+                orient="horizontal",
+                length=170,
+                variable=self.tls_qi_power_param_vars[key],
+                command=lambda _v: self._tls_qi_power_render_selected(),
+            ).pack(side="left", padx=(0, 8))
+        tk.Button(param_row, text="Reset Sliders to Fit", command=self._tls_qi_power_set_sliders_from_selected).pack(
+            side="left", padx=(8, 0)
+        )
+
+        self.tls_qi_power_figure = Figure(figsize=(12, 7))
+        self.tls_qi_power_canvas = FigureCanvasTkAgg(self.tls_qi_power_figure, master=self.tls_qi_power_window)
+        self.tls_qi_power_toolbar = NavigationToolbar2Tk(self.tls_qi_power_canvas, self.tls_qi_power_window)
+        self.tls_qi_power_toolbar.update()
+        self.tls_qi_power_toolbar.pack(side="top", fill="x")
+        self.tls_qi_power_canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._tls_qi_power_render_selected()
+
+    def _tls_qi_power_close(self) -> None:
+        if getattr(self, "tls_qi_power_window", None) is not None and self.tls_qi_power_window.winfo_exists():
+            self.tls_qi_power_window.destroy()
+        self.tls_qi_power_window = None
+        self.tls_qi_power_canvas = None
+        self.tls_qi_power_toolbar = None
+        self.tls_qi_power_figure = None
+        self.tls_qi_power_status_var = None
+        self.tls_qi_power_progress = None
+        self.tls_qi_power_res_slider = None
+        self.tls_qi_power_res_index_var = None
+        self.tls_qi_power_output_vars = {}
+        self.tls_qi_power_param_vars = {}
+
+    def _tls_qi_power_collect_groups(self, scans: list[object]) -> tuple[list[dict], dict]:
+        by_res: dict[str, list[dict]] = {}
+        skipped_no_payload = 0
+        skipped_unaccepted = 0
+        skipped_no_power = 0
+        skipped_invalid = 0
+        for scan in scans:
+            try:
+                power_dbm = float(getattr(scan, "bias_power_dBm", np.nan))
+            except Exception:
+                power_dbm = np.nan
+            if not np.isfinite(power_dbm):
+                skipped_no_power += 1
+                continue
+            fit_payload = scan.candidate_resonators.get("logan_nonlinear_iq_marker_fits")
+            assignments = fit_payload.get("assignments") if isinstance(fit_payload, dict) else {}
+            if not isinstance(assignments, dict):
+                skipped_no_payload += 1
+                continue
+            for resonator_number, payload in assignments.items():
+                if not isinstance(payload, dict) or not payload.get("success"):
+                    skipped_invalid += 1
+                    continue
+                if not bool(payload.get("accepted", False)):
+                    skipped_unaccepted += 1
+                    continue
+                try:
+                    qi = float(payload.get("q_internal", np.nan))
+                    fr0_hz = float(payload.get("fr0_hz", np.nan))
+                except Exception:
+                    skipped_invalid += 1
+                    continue
+                if not np.isfinite(qi) or qi <= 0.0:
+                    skipped_invalid += 1
+                    continue
+                by_res.setdefault(str(resonator_number), []).append(
+                    {
+                        "scan_key": self._scan_key(scan),
+                        "scan_label": Path(getattr(scan, "filename", "")).name,
+                        "bias_power_dbm": float(power_dbm),
+                        "drive_power_w": float(self._tls_qi_power_dbm_to_watts(np.asarray([power_dbm]))[0]),
+                        "qi": float(qi),
+                        "loss": float(1.0 / qi),
+                        "fr0_hz": float(fr0_hz) if np.isfinite(fr0_hz) else np.nan,
+                    }
+                )
+
+        groups = []
+        for resonator_number, points in by_res.items():
+            points = sorted(points, key=lambda point: float(point["bias_power_dbm"]))
+            if len(points) < 2:
+                continue
+            groups.append(
+                {
+                    "resonator_number": str(resonator_number),
+                    "points": points,
+                    "mean_fr0_hz": float(np.nanmean([point["fr0_hz"] for point in points])),
+                }
+            )
+        groups.sort(key=lambda group: (float(group["mean_fr0_hz"]) if np.isfinite(float(group["mean_fr0_hz"])) else np.inf, str(group["resonator_number"])))
+        return groups, {
+            "point_count": int(sum(len(group["points"]) for group in groups)),
+            "resonator_count": int(len(groups)),
+            "skipped_no_payload": int(skipped_no_payload),
+            "skipped_unaccepted": int(skipped_unaccepted),
+            "skipped_no_power": int(skipped_no_power),
+            "skipped_invalid": int(skipped_invalid),
+        }
+
+    def _tls_qi_power_fit_one(self, group: dict) -> dict:
+        points = list(group.get("points", []))
+        power_dbm = np.asarray([point["bias_power_dbm"] for point in points], dtype=float)
+        power_w = np.asarray([point["drive_power_w"] for point in points], dtype=float)
+        qi = np.asarray([point["qi"] for point in points], dtype=float)
+        loss = 1.0 / qi
+        finite = np.isfinite(power_dbm) & np.isfinite(power_w) & (power_w > 0.0) & np.isfinite(qi) & (qi > 0.0)
+        if np.count_nonzero(finite) < 4:
+            raise ValueError("Need at least four finite accepted Qi-vs-power points to fit A, beta, Qother, and Pc.")
+        power_dbm = power_dbm[finite]
+        power_w = power_w[finite]
+        qi = qi[finite]
+        loss = loss[finite]
+        if np.unique(power_w).size < 4:
+            raise ValueError("Need at least four distinct drive powers.")
+
+        loss_min = float(np.nanmin(loss))
+        loss_max = float(np.nanmax(loss))
+        loss_span = max(loss_max - loss_min, loss_max * 0.05, 1.0e-12)
+        qother0 = 1.0 / max(loss_min * 0.9, 1.0e-12)
+        a0 = max(loss_span, loss_max * 0.05, 1.0e-12)
+        pc0 = float(np.nanmedian(power_w))
+        beta0 = 0.5
+        lower = np.asarray([1.0e2, 0.0, max(np.nanmin(power_w) * 1.0e-6, 1.0e-18), 0.05], dtype=float)
+        upper = np.asarray([1.0e12, max(loss_max * 100.0, 1.0e-6), max(np.nanmax(power_w) * 1.0e6, 1.0e-12), 4.0], dtype=float)
+        p0 = np.asarray([qother0, a0, pc0, beta0], dtype=float)
+        p0 = np.minimum(np.maximum(p0, lower * 1.001), upper * 0.999)
+
+        popt, pcov = optimize.curve_fit(
+            self._tls_qi_power_loss_model,
+            power_w,
+            loss,
+            p0=p0,
+            bounds=(lower, upper),
+            maxfev=50000,
+        )
+        model_loss = self._tls_qi_power_loss_model(power_w, *popt)
+        resid = loss - model_loss
+        denom = float(np.vdot(loss, loss).real)
+        nrmse = float(np.vdot(resid, resid).real / denom) if denom > 0.0 else np.inf
+        perr = np.sqrt(np.diag(pcov)) if pcov.size else np.full_like(popt, np.nan, dtype=float)
+        pc_dbm = 10.0 * np.log10(float(popt[2]) / 1.0e-3)
+        return {
+            "success": True,
+            "message": "TLS Qi-vs-power fit complete.",
+            "resonator_number": str(group["resonator_number"]),
+            "point_count": int(power_w.size),
+            "bias_power_dbm": power_dbm,
+            "drive_power_w": power_w,
+            "qi": qi,
+            "loss": loss,
+            "mean_fr0_hz": float(group.get("mean_fr0_hz", np.nan)),
+            "qother": float(popt[0]),
+            "a_tls": float(popt[1]),
+            "pc_w": float(popt[2]),
+            "pc_dbm": float(pc_dbm),
+            "beta": float(popt[3]),
+            "parameter_errors": {
+                "qother": float(perr[0]),
+                "a_tls": float(perr[1]),
+                "pc_w": float(perr[2]),
+                "beta": float(perr[3]),
+            },
+            "loss_nrmse": float(nrmse),
+            "model": "Qi^-1(P) = Qother^-1 + A / sqrt(1 + (P/Pc)^beta)",
+            "power_reference": "VNA drive power converted from dBm to W",
+        }
+
+    def _tls_qi_power_run(self) -> None:
+        groups = list(getattr(self, "tls_qi_power_groups", []))
+        if not groups:
+            return
+        self.tls_qi_power_results = {}
+        if self.tls_qi_power_progress is not None:
+            self.tls_qi_power_progress.configure(maximum=max(1, len(groups)), value=0)
+        failures = 0
+        for idx, group in enumerate(groups):
+            if self.tls_qi_power_res_index_var is not None:
+                self.tls_qi_power_res_index_var.set(idx)
+            if self.tls_qi_power_status_var is not None:
+                self.tls_qi_power_status_var.set(f"Fitting TLS Qi-vs-power {idx + 1}/{len(groups)}.")
+            if self.tls_qi_power_window is not None and self.tls_qi_power_window.winfo_exists():
+                self.tls_qi_power_window.update_idletasks()
+                self.tls_qi_power_window.update()
+            try:
+                result = self._tls_qi_power_fit_one(group)
+            except Exception as exc:
+                result = {
+                    "success": False,
+                    "message": str(exc),
+                    "resonator_number": str(group.get("resonator_number", "")),
+                    "point_count": int(len(group.get("points", []))),
+                }
+                failures += 1
+            self.tls_qi_power_results[str(group["resonator_number"])] = result
+            if self.tls_qi_power_progress is not None:
+                self.tls_qi_power_progress.configure(value=idx + 1)
+            self._tls_qi_power_set_sliders_from_selected()
+            self._tls_qi_power_render_selected()
+        success_count = len(groups) - failures
+        if self.tls_qi_power_status_var is not None:
+            self.tls_qi_power_status_var.set(
+                f"Fit complete: {success_count}/{len(groups)} succeeded, {failures} failed. Review results, then Attach Results."
+            )
+
+    def _tls_qi_power_reset_slider(self) -> None:
+        if self.tls_qi_power_res_slider is not None:
+            self.tls_qi_power_res_slider.configure(to=max(0, len(getattr(self, "tls_qi_power_groups", [])) - 1))
+        if self.tls_qi_power_res_index_var is not None:
+            self.tls_qi_power_res_index_var.set(0)
+
+    def _tls_qi_power_selected_group(self) -> Optional[dict]:
+        groups = list(getattr(self, "tls_qi_power_groups", []))
+        if not groups:
+            return None
+        idx = int(self.tls_qi_power_res_index_var.get()) if self.tls_qi_power_res_index_var is not None else 0
+        idx = min(max(idx, 0), len(groups) - 1)
+        return groups[idx]
+
+    def _tls_qi_power_on_res_slider_changed(self) -> None:
+        self._tls_qi_power_set_sliders_from_selected()
+        self._tls_qi_power_render_selected()
+
+    def _tls_qi_power_set_sliders_from_selected(self) -> None:
+        group = self._tls_qi_power_selected_group()
+        if group is None or not getattr(self, "tls_qi_power_param_vars", None):
+            return
+        result = self.tls_qi_power_results.get(str(group["resonator_number"]), {})
+        if not isinstance(result, dict) or not result.get("success"):
+            points = group.get("points", [])
+            qi = np.asarray([point["qi"] for point in points], dtype=float)
+            power_dbm = np.asarray([point["bias_power_dbm"] for point in points], dtype=float)
+            qother = float(np.nanmax(qi)) if qi.size else 1.0e6
+            a_tls = max(float(np.nanmax(1.0 / qi) - np.nanmin(1.0 / qi)) if qi.size else 1.0e-7, 1.0e-12)
+            pc_dbm = float(np.nanmedian(power_dbm)) if power_dbm.size else -60.0
+            beta = 0.5
+        else:
+            qother = float(result.get("qother", result.get("qres")))
+            a_tls = float(result["a_tls"])
+            pc_dbm = float(result.get("pc_dbm", result.get("pc_drive_dbm")))
+            beta = float(result["beta"])
+        self.tls_qi_power_param_vars["log10_a_tls"].set(float(np.clip(np.log10(max(a_tls, 1.0e-12)), -12.0, -2.0)))
+        self.tls_qi_power_param_vars["beta"].set(float(np.clip(beta, 0.05, 4.0)))
+        self.tls_qi_power_param_vars["log10_qother"].set(float(np.clip(np.log10(max(qother, 1.0)), 3.0, 9.0)))
+        self.tls_qi_power_param_vars["pc_dbm"].set(float(np.clip(pc_dbm, -120.0, 20.0)))
+
+    def _tls_qi_power_slider_params(self) -> tuple[float, float, float, float]:
+        vars_map = getattr(self, "tls_qi_power_param_vars", {})
+        a_tls = 10.0 ** float(vars_map["log10_a_tls"].get())
+        beta = float(vars_map["beta"].get())
+        qother = 10.0 ** float(vars_map["log10_qother"].get())
+        pc_dbm = float(vars_map["pc_dbm"].get())
+        pc_w = float(self._tls_qi_power_dbm_to_watts(np.asarray([pc_dbm]))[0])
+        return qother, a_tls, pc_w, beta
+
+    def _tls_qi_power_render_selected(self) -> None:
+        if getattr(self, "tls_qi_power_figure", None) is None or self.tls_qi_power_canvas is None:
+            return
+        group = self._tls_qi_power_selected_group()
+        vars_map = getattr(self, "tls_qi_power_output_vars", {})
+        for var in vars_map.values():
+            var.set("")
+        self.tls_qi_power_figure.clear()
+        ax_qi = self.tls_qi_power_figure.add_subplot(1, 2, 1)
+        ax_loss = self.tls_qi_power_figure.add_subplot(1, 2, 2)
+        if group is None:
+            ax_qi.text(0.5, 0.5, "No resonator selected.", ha="center", va="center")
+            ax_loss.axis("off")
+            self.tls_qi_power_canvas.draw_idle()
+            return
+
+        points = list(group.get("points", []))
+        power_dbm = np.asarray([point["bias_power_dbm"] for point in points], dtype=float)
+        power_w = np.asarray([point["drive_power_w"] for point in points], dtype=float)
+        qi = np.asarray([point["qi"] for point in points], dtype=float)
+        loss = 1.0 / qi
+        order = np.argsort(power_dbm)
+        power_dbm = power_dbm[order]
+        power_w = power_w[order]
+        qi = qi[order]
+        loss = loss[order]
+        resonator_number = str(group["resonator_number"])
+        result = self.tls_qi_power_results.get(resonator_number)
+
+        vars_map["resonator_number"].set(resonator_number)
+        vars_map["point_count"].set(str(len(points)))
+        if isinstance(result, dict):
+            vars_map["status"].set("ok" if result.get("success") else str(result.get("message", "failed"))[:24])
+            if result.get("success"):
+                vars_map["a_tls"].set(f"{float(result['a_tls']):.9g}")
+                vars_map["beta"].set(f"{float(result['beta']):.9g}")
+                vars_map["qother"].set(f"{float(result.get('qother', result.get('qres'))):.9g}")
+                vars_map["pc_dbm"].set(f"{float(result.get('pc_dbm', result.get('pc_drive_dbm'))):.9g}")
+                vars_map["pc_w"].set(f"{float(result.get('pc_w', result.get('pc_drive_w'))):.9g}")
+                vars_map["nrmse"].set(f"{float(result['loss_nrmse']):.9g}")
+        else:
+            vars_map["status"].set("not fit")
+
+        ax_qi.plot(power_dbm, qi, linestyle="none", marker="o", color="tab:blue", label="accepted Qi")
+        ax_loss.plot(power_dbm, loss, linestyle="none", marker="o", color="tab:blue", label="accepted loss")
+        if power_dbm.size:
+            x_dbm = np.linspace(float(np.nanmin(power_dbm)) - 1.0, float(np.nanmax(power_dbm)) + 1.0, 300)
+            x_w = self._tls_qi_power_dbm_to_watts(x_dbm)
+            if isinstance(result, dict) and result.get("success"):
+                fit_loss = self._tls_qi_power_loss_model(
+                    x_w,
+                    float(result.get("qother", result.get("qres"))),
+                    float(result["a_tls"]),
+                    float(result.get("pc_w", result.get("pc_drive_w"))),
+                    float(result["beta"]),
+                )
+                ax_qi.plot(x_dbm, 1.0 / fit_loss, color="darkorange", linewidth=1.6, label="fit")
+                ax_loss.plot(x_dbm, fit_loss, color="darkorange", linewidth=1.6, label="fit")
+            if getattr(self, "tls_qi_power_param_vars", None):
+                qother, a_tls, pc_w, beta = self._tls_qi_power_slider_params()
+                slider_loss = self._tls_qi_power_loss_model(x_w, qother, a_tls, pc_w, beta)
+                ax_qi.plot(x_dbm, 1.0 / slider_loss, color="crimson", linestyle="--", linewidth=1.2, label="slider")
+                ax_loss.plot(x_dbm, slider_loss, color="crimson", linestyle="--", linewidth=1.2, label="slider")
+
+        title = f"Resonator {resonator_number}"
+        mean_fr0 = float(group.get("mean_fr0_hz", np.nan))
+        if np.isfinite(mean_fr0):
+            title += f" | mean fr0={mean_fr0 / _HZ_PER_GHZ:.9g} GHz"
+        ax_qi.set_title(title, fontsize=10)
+        ax_qi.set_xlabel("Drive power (dBm)")
+        ax_qi.set_ylabel("Qi")
+        ax_qi.grid(True, alpha=0.3)
+        ax_qi.legend(loc="best", fontsize=8)
+        ax_loss.set_title("TLS loss model", fontsize=10)
+        ax_loss.set_xlabel("Drive power (dBm)")
+        ax_loss.set_ylabel("1 / Qi")
+        ax_loss.grid(True, alpha=0.3)
+        ax_loss.legend(loc="best", fontsize=8)
+        self.tls_qi_power_figure.tight_layout()
+        self.tls_qi_power_canvas.draw_idle()
+
+    def _tls_qi_power_confirm_attach(self) -> None:
+        results = getattr(self, "tls_qi_power_results", {})
+        if not results:
+            messagebox.showwarning("No fit results", "Run Fit before attaching results.", parent=self.tls_qi_power_window)
+            return
+        successful = {key: value for key, value in results.items() if isinstance(value, dict) and value.get("success")}
+        if not successful:
+            messagebox.showwarning("No successful fits", "No successful TLS fits are available to attach.", parent=self.tls_qi_power_window)
+            return
+        if not messagebox.askyesno(
+            "Attach TLS Qi-vs-power fits",
+            f"Attach {len(successful)} successful TLS Qi-vs-power fit result(s) to the selected scans?\n\n"
+            "Existing TLS Qi-vs-power fit attachments on those scans will be overwritten.",
+            parent=self.tls_qi_power_window,
+        ):
+            return
+        attached_at = datetime.now().isoformat(timespec="seconds")
+        selected_keys = {self._scan_key(scan) for scan in self._selected_scans()}
+        attached_scans = 0
+        for scan in self._selected_scans():
+            scan.candidate_resonators["tls_qi_power_fits"] = {
+                "attached_at": attached_at,
+                "source": "accepted logan_nonlinear_iq_marker_fits",
+                "selected_scan_keys": sorted(selected_keys),
+                "assignments": successful,
+            }
+            scan.processing_history.append(
+                _make_event(
+                    "attach_tls_qi_power_fits",
+                    {"fit_count": int(len(successful)), "selected_scan_count": int(len(selected_keys))},
+                )
+            )
+            attached_scans += 1
+        self.dataset.processing_history.append(
+            _make_event(
+                "attach_tls_qi_power_fits",
+                {"scan_count": int(attached_scans), "fit_count": int(len(successful))},
+            )
+        )
+        self._mark_dirty()
+        self._refresh_status()
+        self._autosave_dataset()
+        self._log(f"Attached {len(successful)} TLS Qi-vs-power fit result(s) to {attached_scans} selected scan(s).")
+        if self.tls_qi_power_status_var is not None:
+            self.tls_qi_power_status_var.set(
+                f"Attached {len(successful)} TLS Qi-vs-power fit result(s) to {attached_scans} selected scan(s)."
+            )
+
+    @staticmethod
+    def _tls_temperature_mk_to_k(temperature_mk: float) -> float:
+        return float(temperature_mk) / 1000.0
+
+    @staticmethod
+    def _tls_expected_temperature_factor(freq_hz: np.ndarray, temperature_k: float) -> np.ndarray:
+        h = 6.62607015e-34
+        k_b = 1.380649e-23
+        freq = np.asarray(freq_hz, dtype=float)
+        if not np.isfinite(temperature_k) or temperature_k <= 0.0:
+            return np.full(freq.shape, np.nan, dtype=float)
+        return np.tanh(h * freq / (2.0 * k_b * float(temperature_k)))
+
+    def open_tls_a_vs_frequency_window(self) -> None:
+        scans = self._selected_scans()
+        if not scans:
+            messagebox.showwarning(
+                "No selection",
+                "No scans selected for analysis.\nUse 'Select Scans for Analysis' first.",
+            )
+            return
+        points, stats = self._tls_a_freq_collect_points(scans)
+        if not points:
+            messagebox.showwarning(
+                "No A_TLS points",
+                "No selected scans had attached TLS Qi-vs-power fits with finite A_TLS, frequency, and temperature.\n\n"
+                "Run 'Fit TLS Qi vs Power', attach results, and make sure temperatures are assigned.",
+            )
+            return
+
+        if (
+            getattr(self, "tls_a_freq_window", None) is not None
+            and self.tls_a_freq_window.winfo_exists()
+        ):
+            self.tls_a_freq_points = points
+            self.tls_a_freq_stats = stats
+            self.tls_a_freq_window.lift()
+            self._tls_a_freq_render()
+            return
+
+        self.tls_a_freq_points = points
+        self.tls_a_freq_stats = stats
+        self.tls_a_freq_window = tk.Toplevel(self.root)
+        self.tls_a_freq_window.title("A_TLS vs Frequency")
+        self.tls_a_freq_window.geometry("1160x800")
+        self.tls_a_freq_window.protocol("WM_DELETE_WINDOW", self._tls_a_freq_close)
+
+        controls = tk.Frame(self.tls_a_freq_window, padx=8, pady=6)
+        controls.pack(side="top", fill="x")
+        self.tls_a_freq_status_var = tk.StringVar()
+        tk.Label(controls, textvariable=self.tls_a_freq_status_var, anchor="w").pack(side="left", fill="x", expand=True)
+
+        self.tls_a_freq_figure = Figure(figsize=(11, 6.8))
+        self.tls_a_freq_canvas = FigureCanvasTkAgg(self.tls_a_freq_figure, master=self.tls_a_freq_window)
+        self.tls_a_freq_toolbar = NavigationToolbar2Tk(self.tls_a_freq_canvas, self.tls_a_freq_window)
+        self.tls_a_freq_toolbar.update()
+        self.tls_a_freq_toolbar.pack(side="top", fill="x")
+        self.tls_a_freq_canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._tls_a_freq_render()
+
+    def _tls_a_freq_close(self) -> None:
+        if getattr(self, "tls_a_freq_window", None) is not None and self.tls_a_freq_window.winfo_exists():
+            self.tls_a_freq_window.destroy()
+        self.tls_a_freq_window = None
+        self.tls_a_freq_canvas = None
+        self.tls_a_freq_toolbar = None
+        self.tls_a_freq_figure = None
+        self.tls_a_freq_status_var = None
+        self.tls_a_freq_points = []
+        self.tls_a_freq_stats = {}
+
+    def _tls_a_freq_lookup_fr0_hz(self, scans: list[object], resonator_number: str, result: dict) -> float:
+        try:
+            fr0 = float(result.get("mean_fr0_hz", np.nan))
+        except Exception:
+            fr0 = np.nan
+        if np.isfinite(fr0) and fr0 > 0.0:
+            return fr0
+        values = []
+        for scan in scans:
+            fit_payload = scan.candidate_resonators.get("logan_nonlinear_iq_marker_fits")
+            assignments = fit_payload.get("assignments") if isinstance(fit_payload, dict) else {}
+            if not isinstance(assignments, dict):
+                continue
+            payload = assignments.get(resonator_number)
+            if payload is None and str(resonator_number).isdigit():
+                payload = assignments.get(int(resonator_number))
+            if not isinstance(payload, dict) or not payload.get("success"):
+                continue
+            try:
+                candidate = float(payload.get("fr0_hz", np.nan))
+            except Exception:
+                candidate = np.nan
+            if np.isfinite(candidate) and candidate > 0.0:
+                values.append(candidate)
+        return float(np.mean(values)) if values else np.nan
+
+    def _tls_a_freq_collect_points(self, scans: list[object]) -> tuple[list[dict], dict]:
+        points = []
+        seen = set()
+        skipped_no_payload = 0
+        skipped_no_temperature = 0
+        skipped_invalid = 0
+        for scan in scans:
+            try:
+                temperature_mk = float(getattr(scan, "temperature_mK", np.nan))
+            except Exception:
+                temperature_mk = np.nan
+            if not np.isfinite(temperature_mk) or temperature_mk <= 0.0:
+                skipped_no_temperature += 1
+                continue
+            payload = scan.candidate_resonators.get("tls_qi_power_fits")
+            assignments = payload.get("assignments") if isinstance(payload, dict) else {}
+            if not isinstance(assignments, dict):
+                skipped_no_payload += 1
+                continue
+            attached_at = str(payload.get("attached_at", ""))
+            for resonator_number, result in assignments.items():
+                if not isinstance(result, dict) or not result.get("success"):
+                    skipped_invalid += 1
+                    continue
+                try:
+                    a_tls = float(result.get("a_tls", np.nan))
+                except Exception:
+                    a_tls = np.nan
+                fr0_hz = self._tls_a_freq_lookup_fr0_hz(scans, str(resonator_number), result)
+                if not np.isfinite(a_tls) or a_tls <= 0.0 or not np.isfinite(fr0_hz) or fr0_hz <= 0.0:
+                    skipped_invalid += 1
+                    continue
+                key = (
+                    attached_at,
+                    str(resonator_number),
+                    round(float(temperature_mk), 6),
+                    round(float(fr0_hz), 3),
+                    round(float(a_tls), 18),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                points.append(
+                    {
+                        "resonator_number": str(resonator_number),
+                        "temperature_mK": float(temperature_mk),
+                        "temperature_K": self._tls_temperature_mk_to_k(float(temperature_mk)),
+                        "fr0_hz": float(fr0_hz),
+                        "a_tls": float(a_tls),
+                        "scan_label": Path(getattr(scan, "filename", "")).name,
+                        "attached_at": attached_at,
+                    }
+                )
+        points.sort(key=lambda point: (float(point["temperature_mK"]), float(point["fr0_hz"]), str(point["resonator_number"])))
+        return points, {
+            "point_count": int(len(points)),
+            "temperature_count": int(len({round(float(point["temperature_mK"]), 6) for point in points})),
+            "skipped_no_payload": int(skipped_no_payload),
+            "skipped_no_temperature": int(skipped_no_temperature),
+            "skipped_invalid": int(skipped_invalid),
+        }
+
+    def _tls_a_freq_render(self) -> None:
+        if getattr(self, "tls_a_freq_figure", None) is None or self.tls_a_freq_canvas is None:
+            return
+        points = list(getattr(self, "tls_a_freq_points", []))
+        stats = dict(getattr(self, "tls_a_freq_stats", {}))
+        self.tls_a_freq_figure.clear()
+        ax = self.tls_a_freq_figure.add_subplot(1, 1, 1)
+        if not points:
+            ax.text(0.5, 0.5, "No A_TLS points.", ha="center", va="center", transform=ax.transAxes)
+            ax.set_axis_off()
+            self.tls_a_freq_canvas.draw_idle()
+            return
+
+        temps = sorted({round(float(point["temperature_mK"]), 6) for point in points})
+        cmap = colormaps.get_cmap("viridis")
+        denom = max(1, len(temps) - 1)
+        for temp_idx, temp_mk in enumerate(temps):
+            group = [point for point in points if round(float(point["temperature_mK"]), 6) == temp_mk]
+            freq_hz = np.asarray([point["fr0_hz"] for point in group], dtype=float)
+            a_tls = np.asarray([point["a_tls"] for point in group], dtype=float)
+            finite = np.isfinite(freq_hz) & np.isfinite(a_tls) & (freq_hz > 0.0) & (a_tls > 0.0)
+            if not np.any(finite):
+                continue
+            freq_hz = freq_hz[finite]
+            a_tls = a_tls[finite]
+            color = cmap(temp_idx / denom)
+            label = f"{temp_mk:g} mK"
+            ax.scatter(freq_hz / _HZ_PER_GHZ, a_tls, s=30, color=color, label=label, zorder=3)
+            if freq_hz.size >= 1:
+                temp_k = self._tls_temperature_mk_to_k(float(temp_mk))
+                freq_curve = np.linspace(float(np.min(freq_hz)) * 0.98, float(np.max(freq_hz)) * 1.02, 300)
+                u_points = self._tls_expected_temperature_factor(freq_hz, temp_k)
+                fit_mask = np.isfinite(u_points) & (u_points > 0.0)
+                if np.any(fit_mask):
+                    a0 = float(np.dot(a_tls[fit_mask], u_points[fit_mask]) / np.dot(u_points[fit_mask], u_points[fit_mask]))
+                    u_curve = self._tls_expected_temperature_factor(freq_curve, temp_k)
+                    ax.plot(
+                        freq_curve / _HZ_PER_GHZ,
+                        a0 * u_curve,
+                        color=color,
+                        linestyle="--",
+                        linewidth=1.3,
+                        alpha=0.9,
+                        label=f"{temp_mk:g} mK fit, A0={a0:.3g}",
+                    )
+        ax.set_xlabel("Frequency (GHz)")
+        ax.set_ylabel("Extracted A_TLS")
+        ax.set_title("A_TLS vs Frequency | dashed: fitted A0 * tanh(hf / 2 kB T)", fontsize=11)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best", fontsize=8, title="Temperature")
+        self.tls_a_freq_figure.tight_layout()
+        self.tls_a_freq_canvas.draw_idle()
+        if getattr(self, "tls_a_freq_status_var", None) is not None:
+            self.tls_a_freq_status_var.set(
+                f"Showing {len(points)} A_TLS point(s) across {stats.get('temperature_count', 0)} temperature(s). "
+                f"Skipped {stats.get('skipped_no_temperature', 0)} scan(s) without temperature, "
+                f"{stats.get('skipped_no_payload', 0)} without TLS fits, {stats.get('skipped_invalid', 0)} invalid fit(s)."
+            )
+
     def open_accepted_fit_parameter_date_window(self) -> None:
         scans = self._selected_scans()
         if not scans:
@@ -901,13 +1637,20 @@ class BatchResonanceFitMixin:
 
         option_row = tk.Frame(controls)
         option_row.pack(side="top", fill="x", pady=(6, 0))
-        self.res_fit_offset_detail_show_reference_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
-            option_row,
-            text="Show lowest-power reference fit",
-            variable=self.res_fit_offset_detail_show_reference_var,
-            command=self._res_fit_offset_render_fit_detail,
-        ).pack(side="left")
+        self.res_fit_offset_detail_plot_mode_var = tk.StringVar(value="selected")
+        tk.Label(option_row, text="Plot").pack(side="left", padx=(0, 6))
+        for label, value in (
+            ("Selected resonance and fit", "selected"),
+            ("Selected plus lowest-power reference fit", "selected_reference"),
+            ("All same marker number", "same_marker"),
+        ):
+            tk.Radiobutton(
+                option_row,
+                text=label,
+                value=value,
+                variable=self.res_fit_offset_detail_plot_mode_var,
+                command=self._res_fit_offset_render_fit_detail,
+            ).pack(side="left", padx=(0, 10))
 
         self.res_fit_offset_detail_figure = Figure(figsize=(11, 6.8))
         self.res_fit_offset_detail_canvas = FigureCanvasTkAgg(
@@ -933,7 +1676,7 @@ class BatchResonanceFitMixin:
         self.res_fit_offset_detail_figure = None
         self.res_fit_offset_detail_output_vars = {}
         self.res_fit_offset_detail_reference_vars = {}
-        self.res_fit_offset_detail_show_reference_var = None
+        self.res_fit_offset_detail_plot_mode_var = None
         self.res_fit_offset_detail_point = None
 
     def _res_fit_offset_render_fit_detail(self) -> None:
@@ -971,10 +1714,17 @@ class BatchResonanceFitMixin:
         self.res_fit_offset_detail_figure.clear()
         ax_amp = self.res_fit_offset_detail_figure.add_subplot(1, 2, 1)
         ax_iq = self.res_fit_offset_detail_figure.add_subplot(1, 2, 2)
-        show_reference_var = getattr(self, "res_fit_offset_detail_show_reference_var", None)
-        show_reference = bool(show_reference_var.get()) if show_reference_var is not None else False
+        plot_mode_var = getattr(self, "res_fit_offset_detail_plot_mode_var", None)
+        plot_mode = str(plot_mode_var.get()) if plot_mode_var is not None else "selected"
+        show_reference = plot_mode == "selected_reference"
+        show_same_marker = plot_mode == "same_marker"
         reference_scan = point.get("reference_scan")
         reference_payload = point.get("reference_payload")
+        if show_same_marker:
+            self._res_fit_offset_draw_same_marker_detail(ax_amp, ax_iq, point)
+            self.res_fit_offset_detail_figure.tight_layout()
+            self.res_fit_offset_detail_canvas.draw_idle()
+            return
         if show_reference and reference_scan is not None and isinstance(reference_payload, dict):
             reference_vars["scan"].set(str(Path(getattr(reference_scan, "filename", "")).name)[:24])
             reference_vars["fr0_ghz"].set(f"{float(reference_payload.get('fr0_hz', np.nan)) / _HZ_PER_GHZ:.9g}")
@@ -1033,6 +1783,139 @@ class BatchResonanceFitMixin:
         self._res_fit_quality_draw_fit_axes(ax_amp, ax_iq, item, zorder=3)
         self.res_fit_offset_detail_figure.tight_layout()
         self.res_fit_offset_detail_canvas.draw_idle()
+
+    def _res_fit_offset_same_marker_detail_items(self, point: dict) -> list[dict]:
+        marker_number = str(point.get("resonator_number", ""))
+        points = []
+        try:
+            scans = list(self._selected_scans())
+        except Exception:
+            scans = []
+        for scan_index, scan in enumerate(scans):
+            fit_payload = scan.candidate_resonators.get("logan_nonlinear_iq_marker_fits")
+            assignments = fit_payload.get("assignments") if isinstance(fit_payload, dict) else {}
+            if not isinstance(assignments, dict):
+                continue
+            payload = assignments.get(marker_number)
+            if payload is None:
+                payload = assignments.get(int(marker_number)) if marker_number.isdigit() else None
+            if not isinstance(payload, dict) or not payload.get("success"):
+                continue
+            try:
+                bias_power_dbm = float(getattr(scan, "bias_power_dBm", np.nan))
+            except Exception:
+                bias_power_dbm = np.nan
+            points.append(
+                {
+                    "scan": scan,
+                    "payload": payload,
+                    "scan_index": scan_index,
+                    "scan_label": Path(getattr(scan, "filename", "")).name,
+                    "resonator_number": marker_number,
+                    "bias_power_dbm": float(bias_power_dbm),
+                }
+            )
+        if not points:
+            points = [
+                candidate
+                for candidate in list(getattr(self, "res_fit_offset_points", []))
+                if str(candidate.get("resonator_number", "")) == marker_number
+                and isinstance(candidate.get("payload"), dict)
+            ]
+        if not points:
+            points = [point]
+
+        def _sort_key(candidate: dict) -> tuple[float, int, str]:
+            try:
+                power = float(candidate.get("bias_power_dbm", np.nan))
+            except Exception:
+                power = np.nan
+            power_key = power if np.isfinite(power) else float("inf")
+            try:
+                scan_index = int(candidate.get("scan_index", 0))
+            except Exception:
+                scan_index = 0
+            return power_key, scan_index, str(candidate.get("scan_label", ""))
+
+        return sorted(points, key=_sort_key)
+
+    def _res_fit_offset_draw_same_marker_detail(self, ax_amp, ax_iq, point: dict) -> None:
+        items = self._res_fit_offset_same_marker_detail_items(point)
+        marker_number = str(point.get("resonator_number", ""))
+        cmap = colormaps.get_cmap("rainbow")
+        denom = max(1, len(items) - 1)
+        for item_index, item in enumerate(items):
+            scan = item["scan"]
+            payload = item["payload"]
+            color = cmap(item_index / denom)
+            freq = np.asarray(scan.freq, dtype=float)
+            z = np.asarray(scan.s21_complex_raw, dtype=np.complex128)
+            order = np.argsort(freq)
+            freq = freq[order]
+            z = z[order]
+            lo, hi = payload.get("selection_range_hz", (np.nan, np.nan))
+            try:
+                lo = float(lo)
+                hi = float(hi)
+            except Exception:
+                lo = np.nan
+                hi = np.nan
+            mask = np.isfinite(freq) & (freq >= lo) & (freq <= hi)
+            if not np.any(mask):
+                mask = np.isfinite(freq)
+            try:
+                power_dbm = float(item.get("bias_power_dbm", np.nan))
+            except Exception:
+                power_dbm = np.nan
+            scan_label = Path(getattr(scan, "filename", "")).name or str(item.get("scan_label", "scan"))
+            label = f"{power_dbm:g} dBm" if np.isfinite(power_dbm) else scan_label[:20]
+            ax_amp.plot(
+                freq[mask] / _HZ_PER_GHZ,
+                np.abs(z[mask]),
+                color=color,
+                linewidth=1.1,
+                alpha=0.82,
+                label=label,
+            )
+            ax_iq.plot(
+                np.real(z[mask]),
+                np.imag(z[mask]),
+                color=color,
+                linewidth=1.0,
+                alpha=0.82,
+                label=label,
+            )
+            fit_freq = np.asarray(payload.get("fit_freq_hz", []), dtype=float)
+            fit_z = np.asarray(payload.get("fit_s21_complex", []), dtype=np.complex128)
+            if fit_freq.size and fit_z.size == fit_freq.size:
+                ax_amp.plot(
+                    fit_freq / _HZ_PER_GHZ,
+                    np.abs(fit_z),
+                    color=color,
+                    linestyle="--",
+                    linewidth=1.35,
+                    alpha=0.95,
+                )
+                ax_iq.plot(
+                    np.real(fit_z),
+                    np.imag(fit_z),
+                    color=color,
+                    linestyle="--",
+                    linewidth=1.25,
+                    alpha=0.95,
+                )
+        ax_amp.set_title(f"All fits for marker {marker_number}", fontsize=9)
+        ax_amp.set_xlabel("Frequency (GHz)")
+        ax_amp.set_ylabel("|S21|")
+        ax_amp.grid(True, alpha=0.3)
+        if len(items) <= 18:
+            ax_amp.legend(loc="best", fontsize=8, title="Drive power")
+        ax_iq.set_xlabel("Re(raw S21)")
+        ax_iq.set_ylabel("Im(raw S21)")
+        ax_iq.grid(True, alpha=0.3)
+        ax_iq.set_aspect("equal", adjustable="box")
+        if len(items) <= 18:
+            ax_iq.legend(loc="best", fontsize=8, title="Drive power")
 
     @staticmethod
     def _res_fit_offset_format_decimal(value: object) -> str:

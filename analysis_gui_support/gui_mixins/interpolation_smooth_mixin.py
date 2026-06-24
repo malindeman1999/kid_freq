@@ -340,12 +340,7 @@ class InterpolationSmoothMixin:
                 continue
             bf = scan.baseline_filter if isinstance(scan.baseline_filter, dict) else {}
             keep = np.asarray(bf.get("retained_mask"), dtype=bool)
-            phase3 = scan.candidate_resonators.get("phase_correction_3", {})
-            amp_input, phase_input = _read_polar_series(
-                phase3,
-                amplitude_key="corrected_amp",
-                phase_key="corrected_phase_deg",
-            )
+            amp_input, phase_input = self._phase_corrected_polar_for_scan(scan)
 
             interp_amp = np.asarray(prev["interp_amp"], dtype=float)
             interp_phase = np.asarray(prev["interp_phase"], dtype=float)

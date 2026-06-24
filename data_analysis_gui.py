@@ -281,6 +281,23 @@ class DataAnalysisGUI(
         self.res_shift_corr_toolbar: Optional[NavigationToolbar2Tk] = None
         self.res_shift_corr_figure: Optional[Figure] = None
         self.res_shift_corr_status_var: Optional[tk.StringVar] = None
+        self.tls_qi_power_window: Optional[tk.Toplevel] = None
+        self.tls_qi_power_canvas: Optional[FigureCanvasTkAgg] = None
+        self.tls_qi_power_toolbar: Optional[NavigationToolbar2Tk] = None
+        self.tls_qi_power_figure: Optional[Figure] = None
+        self.tls_qi_power_status_var: Optional[tk.StringVar] = None
+        self.tls_qi_power_progress: Optional[ttk.Progressbar] = None
+        self.tls_qi_power_res_slider: Optional[tk.Scale] = None
+        self.tls_qi_power_res_index_var: Optional[tk.IntVar] = None
+        self.tls_qi_power_output_vars: Dict[str, tk.StringVar] = {}
+        self.tls_qi_power_param_vars: Dict[str, tk.DoubleVar] = {}
+        self.tls_qi_power_groups: list[dict] = []
+        self.tls_qi_power_results: Dict[str, dict] = {}
+        self.tls_a_freq_window: Optional[tk.Toplevel] = None
+        self.tls_a_freq_canvas: Optional[FigureCanvasTkAgg] = None
+        self.tls_a_freq_toolbar: Optional[NavigationToolbar2Tk] = None
+        self.tls_a_freq_figure: Optional[Figure] = None
+        self.tls_a_freq_status_var: Optional[tk.StringVar] = None
         self._res_shift_corr_axes: tuple[object, object] | None = None
         self.res_pair_dfdiff_hist_window: Optional[tk.Toplevel] = None
         self.res_pair_dfdiff_hist_canvas: Optional[FigureCanvasTkAgg] = None
@@ -546,17 +563,9 @@ class DataAnalysisGUI(
         left_button_specs.append({"text": "Group Selected Scans", "command": self.group_selected_scans_for_plotting})
         left_button_specs.append({"text": "Plot Selected VNA Scans", "command": self.plot_selected_vna_scans})
         self.unwrap_button = tk.Button(
-            button_col1, text="Phase Correction 1", width=button_width, command=self.open_unwrap_phase_window
+            button_col1, text="Correct 360 Phase Wraps", width=button_width, command=self.open_unwrap_phase_window
         )
         left_button_specs.append({"button": self.unwrap_button})
-        self.phase2_button = tk.Button(
-            button_col1, text="Phase Correction 2", width=button_width, command=self.open_second_phase_correction_window
-        )
-        left_button_specs.append({"button": self.phase2_button})
-        self.phase3_button = tk.Button(
-            button_col1, text="Phase Correction 3", width=button_width, command=self.open_third_phase_correction_window
-        )
-        left_button_specs.append({"button": self.phase3_button})
         self.baseline_button = tk.Button(
             button_col1, text="Baseline Filtering", width=button_width, command=self.open_baseline_filter_window
         )
@@ -591,6 +600,8 @@ class DataAnalysisGUI(
         right_button_specs.append({"text": "Rank Resonator Fits", "command": self.open_resonance_fit_quality_window})
         right_button_specs.append({"text": "Check Fit Offsets", "command": self.open_resonance_fit_offset_window})
         right_button_specs.append({"text": "Fit Params vs Date", "command": self.open_accepted_fit_parameter_date_window})
+        right_button_specs.append({"text": "Fit TLS Qi vs Power", "command": self.open_tls_qi_power_fit_window})
+        right_button_specs.append({"text": "Plot TLS A vs Freq", "command": self.open_tls_a_vs_frequency_window})
         right_button_specs.append({"text": "Mark Res. on Sel. Scans", "command": self.open_attached_resonance_editor})
         right_button_specs.append({"text": "Clear All Res. Markers", "command": self.clear_all_resonator_markers})
         right_button_specs.append({"text": "Link Gaussian Minima", "command": self.open_link_gaussian_minima_window})
@@ -795,8 +806,8 @@ class DataAnalysisGUI(
         self._dsdf_close()
 
     def _attach_save_and_close_unwrap(self) -> None:
-        self._unwrap_attach()
-        self._unwrap_close()
+        if self._unwrap_attach():
+            self._unwrap_close()
 
     def _attach_save_and_close_phase2(self) -> None:
         self._phase2_attach()
@@ -902,6 +913,24 @@ class DataAnalysisGUI(
         )
         return amp.shape == scan.freq.shape and phase.shape == scan.freq.shape
 
+    def _phase_corrected_polar_for_scan(self, scan: VNAScan) -> tuple[np.ndarray, np.ndarray]:
+        phase3 = scan.candidate_resonators.get("phase_correction_3")
+        if isinstance(phase3, dict):
+            amp, phase = _read_polar_series(
+                phase3,
+                amplitude_key="corrected_amp",
+                phase_key="corrected_phase_deg",
+            )
+            if amp.shape == scan.freq.shape and phase.shape == scan.freq.shape:
+                return amp, phase
+        if scan.has_dewrapped_phase():
+            return scan.amplitude(), scan.phase_deg_unwrapped()
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+
+    def _has_valid_phase_corrected_output(self, scan: VNAScan) -> bool:
+        amp, phase = self._phase_corrected_polar_for_scan(scan)
+        return amp.shape == scan.freq.shape and phase.shape == scan.freq.shape
+
     def _has_valid_baseline_filter_output(self, scan: VNAScan) -> bool:
         bf = scan.baseline_filter
         if not isinstance(bf, dict):
@@ -997,7 +1026,7 @@ class DataAnalysisGUI(
         self._configure_action_button(
             self.norm_apply_large_button,
             available=bool(scans)
-            and all(self._has_valid_phase3_output(scan) for scan in scans)
+            and all(self._has_valid_phase_corrected_output(scan) for scan in scans)
             and any(self._has_valid_interp_output(scan) for scan in scans),
         )
 
@@ -1088,7 +1117,7 @@ class DataAnalysisGUI(
         done_count = sum(1 for scan in scans if self._has_valid_baseline_filter_output(scan))
         self._configure_action_button(
             self.baseline_button,
-            available=bool(scans) and all(self._has_valid_phase3_output(scan) for scan in scans),
+            available=bool(scans) and all(self._has_valid_phase_corrected_output(scan) for scan in scans),
             done_count=done_count,
             total_count=len(scans),
         )

@@ -11,7 +11,7 @@ from matplotlib.ticker import AutoLocator, AutoMinorLocator, MultipleLocator
 from tkinter import messagebox, ttk
 
 from ..analysis_models import _current_user, _make_event
-from phase_correction import process_phase_data
+from phase_correction.phase_correction import correct_phase_diffs
 
 DEFAULT_PHASE_THRESHOLD_DEG = 10.0
 DEFAULT_APPLY_EXACT_360 = True
@@ -32,7 +32,7 @@ class UnwrapPhaseMixin:
             return
 
         self.unwrap_window = tk.Toplevel(self.root)
-        self.unwrap_window.title("Phase Correction")
+        self.unwrap_window.title("Correct 360 Phase Wraps")
         self.unwrap_window.geometry("1280x900")
         self.unwrap_window.protocol("WM_DELETE_WINDOW", self._unwrap_close)
 
@@ -69,36 +69,8 @@ class UnwrapPhaseMixin:
         self.unwrap_max_passes_slider.bind("<ButtonRelease-1>", self._unwrap_on_control_released)
         self.unwrap_max_passes_slider.bind("<KeyRelease>", self._unwrap_on_control_released)
 
-        self.unwrap_min_sep_slider = tk.Scale(
-            controls,
-            from_=1.0,
-            to=500.0,
-            resolution=1.0,
-            orient="horizontal",
-            label="Min Separation (kHz)",
-            command=lambda _v: self._unwrap_on_control_changed(),
-            length=220,
-        )
-        self.unwrap_min_sep_slider.set(DEFAULT_MIN_SEPARATION_HZ / 1e3)
-        self.unwrap_min_sep_slider.grid(row=0, column=2, padx=(0, 8), sticky="w")
-        self.unwrap_min_sep_slider.bind("<ButtonRelease-1>", self._unwrap_on_control_released)
-        self.unwrap_min_sep_slider.bind("<KeyRelease>", self._unwrap_on_control_released)
-
         self.unwrap_apply_exact_360_var = tk.BooleanVar(value=DEFAULT_APPLY_EXACT_360)
-        tk.Checkbutton(
-            controls,
-            text="Snap near 2*pi phase wraps",
-            variable=self.unwrap_apply_exact_360_var,
-            command=self._unwrap_on_toggle_changed,
-        ).grid(row=0, column=3, padx=(0, 12), sticky="w")
-
-        self.unwrap_correct_congruent_var = tk.BooleanVar(value=DEFAULT_CORRECT_CONGRUENT)
-        tk.Checkbutton(
-            controls,
-            text="Correct VNA phase errors",
-            variable=self.unwrap_correct_congruent_var,
-            command=self._unwrap_on_toggle_changed,
-        ).grid(row=0, column=4, padx=(0, 12), sticky="w")
+        self.unwrap_correct_congruent_var = tk.BooleanVar(value=False)
 
         self.unwrap_auto_y_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
@@ -106,19 +78,16 @@ class UnwrapPhaseMixin:
             text="Auto-scale phase in window",
             variable=self.unwrap_auto_y_var,
             command=self._unwrap_on_auto_y_toggled,
-        ).grid(row=0, column=5, padx=(0, 12), sticky="w")
+        ).grid(row=0, column=2, padx=(0, 12), sticky="w")
         self.unwrap_mod360_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
             controls,
             text="Plot mod 360",
             variable=self.unwrap_mod360_var,
             command=self._unwrap_on_toggle_changed,
-        ).grid(row=0, column=6, padx=(0, 12), sticky="w")
+        ).grid(row=0, column=3, padx=(0, 12), sticky="w")
 
-        tk.Label(controls, text="p-random cutoff:").grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.unwrap_p_random_var = tk.StringVar(value=f"{DEFAULT_P_RANDOM_CUTOFF:g}")
-        self.unwrap_p_random_entry = tk.Entry(controls, textvariable=self.unwrap_p_random_var, width=12)
-        self.unwrap_p_random_entry.grid(row=1, column=1, sticky="w", pady=(6, 0))
 
         self.unwrap_update_button = tk.Button(
             controls,
@@ -126,11 +95,11 @@ class UnwrapPhaseMixin:
             width=16,
             command=self._unwrap_update_preview,
         )
-        self.unwrap_update_button.grid(row=1, column=2, sticky="w", pady=(6, 0))
+        self.unwrap_update_button.grid(row=1, column=0, sticky="w", pady=(6, 0))
 
         self.unwrap_status_var = tk.StringVar(value="Opening window and preparing preview...")
         tk.Label(controls, textvariable=self.unwrap_status_var, anchor="w").grid(
-            row=1, column=3, columnspan=2, sticky="we", pady=(6, 0)
+            row=1, column=1, columnspan=3, sticky="we", pady=(6, 0)
         )
         self.unwrap_progress = ttk.Progressbar(
             controls,
@@ -173,21 +142,13 @@ class UnwrapPhaseMixin:
             raise ValueError("Phase correction controls are not initialized.")
         threshold_deg = float(self.unwrap_threshold_slider.get())
         max_passes = int(self.unwrap_max_passes_slider.get())
-        min_sep_khz = float(self.unwrap_min_sep_slider.get()) if self.unwrap_min_sep_slider is not None else 15.0
-        p_cutoff_text = self.unwrap_p_random_var.get().strip() if self.unwrap_p_random_var is not None else "1e-3"
-        try:
-            p_random_cutoff = float(p_cutoff_text)
-        except ValueError as exc:
-            raise ValueError("p-random cutoff must be numeric (e.g., 1e-3).") from exc
-        if p_random_cutoff <= 0.0:
-            raise ValueError("p-random cutoff must be > 0.")
         return {
             "threshold_deg": threshold_deg,
             "max_passes": max_passes,
-            "apply_exact_360": bool(self.unwrap_apply_exact_360_var.get()) if self.unwrap_apply_exact_360_var is not None else True,
-            "correct_congruent": bool(self.unwrap_correct_congruent_var.get()) if self.unwrap_correct_congruent_var is not None else True,
-            "min_separation_hz": min_sep_khz * 1e3,
-            "p_random_cutoff": p_random_cutoff,
+            "apply_exact_360": True,
+            "correct_congruent": False,
+            "min_separation_hz": DEFAULT_MIN_SEPARATION_HZ,
+            "p_random_cutoff": DEFAULT_P_RANDOM_CUTOFF,
         }
 
     def _unwrap_set_attach_state(self, attached: bool) -> None:
@@ -231,7 +192,7 @@ class UnwrapPhaseMixin:
         for idx, scan in enumerate(scans, start=1):
             if self.unwrap_status_var is not None:
                 self.unwrap_status_var.set(
-                    f"Processing phase correction preview: {idx}/{len(scans)} | {Path(scan.filename).name}"
+                    f"Processing 360-wrap preview: {idx}/{len(scans)} | {Path(scan.filename).name}"
                 )
             if self.unwrap_progress is not None:
                 self.unwrap_progress.configure(value=idx - 1)
@@ -246,50 +207,57 @@ class UnwrapPhaseMixin:
                 freq_sorted = freq[order]
                 s21_sorted = s21[order]
 
-                processed = process_phase_data(
-                    freq_sorted,
-                    s21_sorted,
+                phase_sorted = np.angle(s21_sorted, deg=True)
+                (
+                    pass_corrected_sorted,
+                    _history,
+                    correction_360_freqs,
+                    _correction_360_phases,
+                    correction_irregular_freqs,
+                    _correction_irregular_phases,
+                ) = correct_phase_diffs(
+                    phase_sorted,
+                    freq=freq_sorted,
                     threshold_deg=settings["threshold_deg"],
-                    apply_exact_360=settings["apply_exact_360"],
+                    apply_exact_360=True,
                     max_passes=settings["max_passes"],
-                    min_separation_hz=settings["min_separation_hz"],
-                    p_random_cutoff=settings["p_random_cutoff"],
-                    correct_congruent=settings["correct_congruent"],
-                    correct_non_congruent=False,
+                    return_details=True,
                     verbose=False,
                 )
 
-                corrected_sorted = np.asarray(processed["phase_corrected"], dtype=float)
+                pass_corrected_sorted = np.asarray(pass_corrected_sorted, dtype=float)
+                phase_diff_corrected = np.diff(pass_corrected_sorted)
+                correction_irregular_freqs = np.asarray(correction_irregular_freqs, dtype=float)
+                if correction_irregular_freqs.size > 0 and phase_diff_corrected.size > 0:
+                    irregular_idx = np.searchsorted(freq_sorted, correction_irregular_freqs) - 1
+                    irregular_idx = irregular_idx[(irregular_idx >= 0) & (irregular_idx < phase_diff_corrected.size)]
+                    phase_diff_corrected[irregular_idx] = np.diff(phase_sorted)[irregular_idx]
+                corrected_sorted = np.empty_like(phase_sorted, dtype=float)
+                if corrected_sorted.size > 0:
+                    corrected_sorted[0] = phase_sorted[0]
+                    corrected_sorted[1:] = phase_sorted[0] + np.cumsum(phase_diff_corrected)
                 corrected_unsorted = corrected_sorted[inv]
+                correction_360_freqs = np.asarray(correction_360_freqs, dtype=float)
+                if correction_360_freqs.size > 0 and corrected_sorted.size > 0:
+                    idx_360 = np.searchsorted(freq_sorted, correction_360_freqs).clip(0, len(corrected_sorted) - 1)
+                    correction_360_phases_mod360 = np.mod(corrected_sorted[idx_360], 360.0)
+                else:
+                    correction_360_phases_mod360 = np.empty((0,), dtype=float)
                 self.unwrap_preview[self._scan_key(scan)] = {
                     "freq_sorted": freq_sorted,
-                    "phase_corrected_initial_sorted": np.asarray(processed["phase_corrected_initial"], dtype=float),
-                    "phase_corrected_initial_mod360_sorted": np.asarray(
-                        processed["phase_corrected_initial_mod360"], dtype=float
-                    ),
+                    "phase_corrected_initial_sorted": phase_sorted,
+                    "phase_corrected_initial_mod360_sorted": np.mod(phase_sorted, 360.0),
                     "phase_corrected_sorted": corrected_sorted,
-                    "phase_corrected_mod360_sorted": np.asarray(
-                        processed["phase_corrected_mod360"], dtype=float
-                    ),
+                    "phase_corrected_mod360_sorted": np.mod(corrected_sorted, 360.0),
                     "phase_corrected_unsorted": corrected_unsorted,
-                    "correction_360_freqs": np.asarray(processed["correction_360_freqs"], dtype=float),
-                    "correction_360_phases_mod360": np.asarray(
-                        processed["correction_360_phases_mod360"], dtype=float
-                    ),
-                    "congruent_freqs": np.asarray(processed["congruent_freqs"], dtype=float),
-                    "congruent_phases": np.asarray(
-                        processed["congruent_phases"], dtype=float
-                    ),
-                    "congruent_phases_mod360": np.asarray(
-                        processed["congruent_phases_mod360"], dtype=float
-                    ),
-                    "non_congruent_freqs": np.asarray(processed["non_congruent_freqs"], dtype=float),
-                    "non_congruent_phases": np.asarray(
-                        processed["non_congruent_phases"], dtype=float
-                    ),
-                    "non_congruent_phases_mod360": np.asarray(
-                        processed["non_congruent_phases_mod360"], dtype=float
-                    ),
+                    "correction_360_freqs": correction_360_freqs,
+                    "correction_360_phases_mod360": correction_360_phases_mod360,
+                    "congruent_freqs": np.empty((0,), dtype=float),
+                    "congruent_phases": np.empty((0,), dtype=float),
+                    "congruent_phases_mod360": np.empty((0,), dtype=float),
+                    "non_congruent_freqs": np.empty((0,), dtype=float),
+                    "non_congruent_phases": np.empty((0,), dtype=float),
+                    "non_congruent_phases_mod360": np.empty((0,), dtype=float),
                     "settings": settings,
                 }
             except Exception as exc:
@@ -475,7 +443,7 @@ class UnwrapPhaseMixin:
                 "xlim_changed", lambda changed_ax: self._unwrap_autoscale_y_for_visible_x(changed_ax)
             )
 
-        title = "Phase Correction"
+        title = "Correct 360 Phase Wraps"
         settings = None
         if scans:
             first = self.unwrap_preview.get(self._scan_key(scans[0]))
@@ -483,19 +451,23 @@ class UnwrapPhaseMixin:
                 settings = first.get("settings")
         if isinstance(settings, dict):
             title = (
-                "Phase Correction"
+                "Correct 360 Phase Wraps"
                 f" | threshold={settings['threshold_deg']:.1f} deg"
                 f" | max_passes={settings['max_passes']}"
-                f" | min_sep={settings['min_separation_hz'] / 1e3:.1f} kHz"
             )
         self.unwrap_figure.suptitle(title, fontsize=11)
         self.unwrap_figure.tight_layout()
         self.unwrap_canvas.draw_idle()
 
-    def _unwrap_attach(self) -> None:
+    def _unwrap_attach(self) -> bool:
         scans = self._selected_scans()
         if not scans:
-            return
+            return False
+        if not messagebox.askyesno(
+            "Attach 360 phase-wrap correction",
+            "Attach the previewed 360-degree phase-wrap correction to all selected scans?",
+        ):
+            return False
         count = 0
         attached_at = datetime.now().isoformat(timespec="seconds")
         for scan in scans:
@@ -513,12 +485,12 @@ class UnwrapPhaseMixin:
             }
             scan.processing_history.append(
                 _make_event(
-                    "attach_phase_correction",
+                    "attach_phase_wrap_correction",
                     {
                         "threshold_deg": float(settings.get("threshold_deg", DEFAULT_PHASE_THRESHOLD_DEG)),
                         "max_passes": int(settings.get("max_passes", DEFAULT_MAX_PASSES)),
                         "apply_exact_360": bool(settings.get("apply_exact_360", DEFAULT_APPLY_EXACT_360)),
-                        "correct_congruent": bool(settings.get("correct_congruent", DEFAULT_CORRECT_CONGRUENT)),
+                        "correct_congruent": False,
                         "min_separation_hz": float(settings.get("min_separation_hz", DEFAULT_MIN_SEPARATION_HZ)),
                         "p_random_cutoff": float(settings.get("p_random_cutoff", DEFAULT_P_RANDOM_CUTOFF)),
                         "regular_count": int(np.asarray(prev["correction_360_freqs"]).size),
@@ -531,16 +503,22 @@ class UnwrapPhaseMixin:
             )
             count += 1
 
-        self.dataset.processing_history.append(
-            _make_event("attach_phase_correction_selected", {"selected_count": count})
-        )
+        if count == 0:
+            messagebox.showwarning(
+                "Nothing attached",
+                "No selected scans had a current 360 phase-wrap preview to attach.",
+            )
+            return False
+
+        self.dataset.processing_history.append(_make_event("attach_phase_wrap_correction_selected", {"selected_count": count}))
         self._mark_dirty()
         self._refresh_status()
         self._unwrap_set_attach_state(attached=True)
         if self.unwrap_status_var is not None:
-            self.unwrap_status_var.set(f"Attached phase correction to {count} selected scan(s).")
-        self._log(f"Attached phase correction to {count} selected scan(s).")
+            self.unwrap_status_var.set(f"Attached 360 phase-wrap correction to {count} selected scan(s).")
+        self._log(f"Attached 360 phase-wrap correction to {count} selected scan(s).")
         self._autosave_dataset()
+        return True
 
     def _unwrap_close(self) -> None:
         if self.unwrap_window is not None and self.unwrap_window.winfo_exists():

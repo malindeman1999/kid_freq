@@ -16,7 +16,7 @@ from matplotlib.figure import Figure
 from tkinter import messagebox, ttk
 
 from ..analysis_filters import _compute_one_scan_filter, _estimate_frequency_resolution_mhz
-from ..analysis_models import VNAScan, _current_user, _make_event, _read_polar_series
+from ..analysis_models import VNAScan, _current_user, _make_event
 
 
 class BaselineFilterMixin:
@@ -96,25 +96,17 @@ class BaselineFilterMixin:
         scans = self._baseline_target_scans()
         if not scans:
             return
-        missing_phase3 = []
+        missing_phase_correction = []
         for scan in scans:
-            phase3 = scan.candidate_resonators.get("phase_correction_3")
-            if not isinstance(phase3, dict):
-                missing_phase3.append(Path(scan.filename).name)
-                continue
-            amp3, phase3_deg = _read_polar_series(
-                phase3,
-                amplitude_key="corrected_amp",
-                phase_key="corrected_phase_deg",
-            )
-            if amp3.shape != scan.freq.shape or phase3_deg.shape != scan.freq.shape:
-                missing_phase3.append(Path(scan.filename).name)
-        if missing_phase3:
+            amp, phase = self._phase_corrected_polar_for_scan(scan)
+            if amp.shape != scan.freq.shape or phase.shape != scan.freq.shape:
+                missing_phase_correction.append(Path(scan.filename).name)
+        if missing_phase_correction:
             messagebox.showwarning(
-                "Missing Phase Correction 3 output",
+                "Missing phase-wrap correction",
                 "Run pipeline in order:\n"
-                "Phase Correction 1 -> Phase Correction 2 -> Phase Correction 3 -> Baseline Filtering.\n\n"
-                "Use 'Phase Correction 3' and click Attach for all selected scans before baseline filtering.",
+                "Correct 360 Phase Wraps -> Baseline Filtering.\n\n"
+                "Use 'Correct 360 Phase Wraps' and click Attach for all selected scans before baseline filtering.",
             )
             return
 
@@ -727,12 +719,7 @@ class BaselineFilterMixin:
 
             for i, scan in enumerate(scans):
                 freq_ghz = np.asarray(scan.freq, dtype=float) / 1.0e9
-                phase3 = scan.candidate_resonators.get("phase_correction_3", {})
-                amp, ph = _read_polar_series(
-                    phase3,
-                    amplitude_key="corrected_amp",
-                    phase_key="corrected_phase_deg",
-                )
+                amp, ph = self._phase_corrected_polar_for_scan(scan)
                 ax_a = axes_arr[i, 0]
                 ax_p = axes_arr[i, 1]
                 ax_a.plot(freq_ghz, amp, color="0.6", linewidth=0.8, label="Amplitude input")
@@ -835,9 +822,7 @@ class BaselineFilterMixin:
             keep = result["retained_mask"].astype(bool)
             baseline = result["baseline_amplitude"]
             filtered_freq = scan.freq[keep]
-            phase3 = scan.candidate_resonators["phase_correction_3"]
-            corrected_amp = np.asarray(phase3["corrected_amp"], dtype=float)
-            corrected_phase = np.asarray(phase3["corrected_phase_deg"], dtype=float)
+            corrected_amp, corrected_phase = self._phase_corrected_polar_for_scan(scan)
             filtered_amp = corrected_amp[keep]
             filtered_phase = corrected_phase[keep]
             scan.baseline_filter = {

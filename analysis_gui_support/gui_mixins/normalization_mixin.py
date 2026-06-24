@@ -94,12 +94,7 @@ class NormalizationMixin:
         if smooth_phase.shape != source_scan.freq.shape:
             smooth_phase = np.asarray(interp_phase, dtype=float)
 
-        phase3 = target_scan.candidate_resonators.get("phase_correction_3", {})
-        corrected_amp, corrected_phase = _read_polar_series(
-            phase3,
-            amplitude_key="corrected_amp",
-            phase_key="corrected_phase_deg",
-        )
+        corrected_amp, corrected_phase = self._phase_corrected_polar_for_scan(target_scan)
         if corrected_amp.shape != target_scan.freq.shape or corrected_phase.shape != target_scan.freq.shape:
             return None
 
@@ -223,12 +218,7 @@ class NormalizationMixin:
             if interp_amp.shape != scan.freq.shape or interp_phase.shape != scan.freq.shape:
                 continue
 
-            phase3 = scan.candidate_resonators.get("phase_correction_3", {})
-            corrected_amp, corrected_phase = _read_polar_series(
-                phase3,
-                amplitude_key="corrected_amp",
-                phase_key="corrected_phase_deg",
-            )
+            corrected_amp, corrected_phase = self._phase_corrected_polar_for_scan(scan)
             if corrected_amp.shape != scan.freq.shape or corrected_phase.shape != scan.freq.shape:
                 continue
 
@@ -322,13 +312,13 @@ class NormalizationMixin:
                     norm_amp=np.asarray(prev["norm_amp"], dtype=float),
                     norm_phase=np.asarray(prev["norm_phase_deg_unwrapped"], dtype=float),
                     attached_at=attached_at,
-                    source="phase3_polar / interp_polar",
+                    source="phase_corrected_polar / interp_polar",
                 )
             )
             scan.processing_history.append(
                 _make_event(
                     "attach_normalized_baseline",
-                    {"source": "phase3_polar / interp_polar", "points": int(scan.freq.size)},
+                    {"source": "phase_corrected_polar / interp_polar", "points": int(scan.freq.size)},
                 )
             )
             count += 1
@@ -363,11 +353,11 @@ class NormalizationMixin:
                 "At least one selected scan must already have attached interpolation data to act as the large-scan baseline source.",
             )
             return
-        invalid_phase = [Path(scan.filename).name for scan in scans if not self._has_valid_phase3_output(scan)]
+        invalid_phase = [Path(scan.filename).name for scan in scans if not self._has_valid_phase_corrected_output(scan)]
         if invalid_phase:
             messagebox.showwarning(
-                "Missing Phase Correction 3 output",
-                "All selected scans must have Phase Correction 3 attached before applying a large-scan baseline.\n\n"
+                "Missing phase-wrap correction",
+                "All selected scans must have a 360 phase-wrap correction attached before applying a large-scan baseline.\n\n"
                 + "\n".join(invalid_phase[:10]),
             )
             return
@@ -456,7 +446,7 @@ class NormalizationMixin:
                     norm_amp=np.asarray(preview["norm_amp"], dtype=float),
                     norm_phase=np.asarray(preview["norm_phase_deg_unwrapped"], dtype=float),
                     attached_at=attached_at,
-                    source=f"phase3_polar / borrowed interp baseline from {source_name}",
+                    source=f"phase_corrected_polar / borrowed interp baseline from {source_name}",
                 )
             )
             target_scan.processing_history.append(

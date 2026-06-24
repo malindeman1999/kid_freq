@@ -1,0 +1,1024 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TLS Saturation Analysis of Al KID Power Sweeps</title>
+
+  <!-- MathJax configuration -->
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['\\(', '\\)']],
+        displayMath: [['\\[', '\\]']]
+      },
+      svg: {
+        fontCache: 'global'
+      }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+      max-width: 1050px;
+      margin: 2rem auto;
+      padding: 0 1.5rem;
+      color: #222;
+      background: #fff;
+    }
+
+    h1, h2, h3 {
+      line-height: 1.2;
+      margin-top: 2rem;
+    }
+
+    h1 {
+      border-bottom: 2px solid #ddd;
+      padding-bottom: 0.4rem;
+    }
+
+    h2 {
+      border-bottom: 1px solid #e5e5e5;
+      padding-bottom: 0.25rem;
+    }
+
+    code, pre {
+      font-family: Consolas, Menlo, Monaco, "Courier New", monospace;
+      font-size: 0.95em;
+    }
+
+    pre {
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      padding: 1rem;
+      overflow-x: auto;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 1rem 0;
+    }
+
+    th, td {
+      border: 1px solid #ddd;
+      padding: 0.55rem;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f3f3f3;
+    }
+
+    .note {
+      background: #fff8dc;
+      border-left: 4px solid #d6a600;
+      padding: 0.75rem 1rem;
+      margin: 1rem 0;
+    }
+
+    .warning {
+      background: #fff0f0;
+      border-left: 4px solid #cc3333;
+      padding: 0.75rem 1rem;
+      margin: 1rem 0;
+    }
+
+    .good {
+      background: #eefaf0;
+      border-left: 4px solid #2e8b57;
+      padding: 0.75rem 1rem;
+      margin: 1rem 0;
+    }
+
+    .todo {
+      background: #eef6ff;
+      border-left: 4px solid #337ab7;
+      padding: 0.75rem 1rem;
+      margin: 1rem 0;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>TLS Saturation Analysis of Al KID Power Sweeps</h1>
+
+<p>
+This page describes an analysis procedure for Al KID measurements where the internal quality factor
+\(Q_i\) and resonance frequency \(f_r\) are measured as functions of readout drive power and bath
+temperature. The goal is to test whether moderate-power increases in \(Q_i\) and upward shifts in
+\(f_r\) are consistent with saturation of two-level systems (TLS) in dielectric/interface regions of
+the resonator.
+</p>
+
+<p>
+The motivating observation is:
+</p>
+
+<ul>
+  <li>As readout drive power increases, \(Q_i\) increases at moderate powers.</li>
+  <li>The fitted resonance frequency \(f_r\) also shifts upward at moderate powers.</li>
+  <li>The effect is strong at low temperature, including data near 50 mK.</li>
+  <li>This sign is opposite ordinary quasiparticle heating, which usually gives \(L_k \uparrow\), \(f_r \downarrow\), and \(Q_i \downarrow\).</li>
+</ul>
+
+<p>
+This pattern is naturally consistent with TLS saturation:
+</p>
+
+\[
+P_{\rm drive}\uparrow
+\quad \Rightarrow \quad
+\text{TLS saturation}
+\quad \Rightarrow \quad
+\tan\delta_{\rm TLS}\downarrow
+\quad \Rightarrow \quad
+Q_i\uparrow .
+\]
+
+<p>
+The same TLS population also produces dielectric dispersion. If TLS saturation reduces the effective
+dielectric constant, then the capacitance decreases and the resonance frequency increases:
+</p>
+
+\[
+\epsilon_{\rm eff}\downarrow
+\quad \Rightarrow \quad
+C_{\rm eff}\downarrow
+\quad \Rightarrow \quad
+f_r\uparrow .
+\]
+
+<h2>1. Data Available</h2>
+
+<p>
+For each resonator \(i\), temperature \(T_j\), and drive power \(P_k\), the analysis assumes the following
+fitted quantities are available:
+</p>
+
+<ul>
+  <li>\(Q_i(P_k,T_j)\): internal quality factor.</li>
+  <li>\(f_r(P_k,T_j)\): resonance frequency.</li>
+  <li>\(Q_r(P_k,T_j)\): loaded quality factor, if available.</li>
+  <li>\(Q_c(P_k,T_j)\): coupling quality factor, if available.</li>
+  <li>\(a(P_k,T_j)\): nonlinear resonator parameter from the Swenson-style nonlinear fit, if available.</li>
+  <li>Resonator design metadata: design group, frequency, geometry, wafer position, etc.</li>
+</ul>
+
+<p>
+The primary TLS analysis should be done using loss:
+</p>
+
+\[
+y(P,T) = Q_i^{-1}(P,T),
+\]
+
+<p>
+not directly using \(Q_i\), because independent loss mechanisms add approximately linearly in
+\(Q^{-1}\).
+</p>
+
+<h2>2. TLS Loss Saturation Model</h2>
+
+<h3>2.1 Fixed-temperature model</h3>
+
+<p>
+At a single temperature and for one resonator, fit the power dependence of the internal loss to:
+</p>
+
+\[
+Q_i^{-1}(P_{\rm drive})
+=
+Q_{\rm other}^{-1}
++
+\frac{A_{\rm TLS}(T,f)}
+{\left[1+\left(P_{\rm drive}/P_c\right)^\beta\right]^{1/2}}.
+\]
+
+<p>
+Here:
+</p>
+
+<table>
+  <tr>
+    <th>Parameter</th>
+    <th>Meaning</th>
+  </tr>
+  <tr>
+    <td>\(Q_{\rm other}\)</td>
+    <td>Residual non-saturating internal quality factor. It is the high-power asymptote if TLS saturates before heating or other nonlinear effects dominate.</td>
+  </tr>
+  <tr>
+    <td>\(A_{\rm TLS}(T,f)\)</td>
+    <td>Numerator of the TLS loss term at a given temperature and resonator frequency. This is the apparent unsaturated TLS loss amplitude at that \(T\) and \(f\).</td>
+  </tr>
+  <tr>
+    <td>\(P_c\)</td>
+    <td>Critical saturation power expressed at the chosen drive-power reference plane. This equals the true internal TLS critical power divided by the power gain/buildup factor.</td>
+  </tr>
+  <tr>
+    <td>\(\beta\)</td>
+    <td>Empirical saturation exponent. Ideal uniform-field TLS saturation suggests \(\beta \approx 1\), but real devices often give smaller effective values because of nonuniform fields and TLS distributions.</td>
+  </tr>
+</table>
+
+<div class="note">
+  <strong>Important:</strong> \(P_c\) is not the microscopic TLS critical power unless the attenuation, coupling, and internal resonator buildup are known. From a fit versus raw drive power, the result is \(P_c/G\), where \(G\) is the effective conversion from drive power to internal resonator power.
+</div>
+
+<h3>2.2 Temperature and frequency dependence of the numerator</h3>
+
+<p>
+In the standard TLS model, the numerator should be:
+</p>
+
+\[
+A_{\rm TLS}(T,f)
+=
+F\tan\delta_0
+\,
+\tanh\left(\frac{hf}{2k_B T}\right).
+\]
+
+<p>
+Here:
+</p>
+
+<table>
+  <tr>
+    <th>Parameter</th>
+    <th>Meaning</th>
+  </tr>
+  <tr>
+    <td>\(F\)</td>
+    <td>Dielectric participation factor of the TLS-hosting region.</td>
+  </tr>
+  <tr>
+    <td>\(\tan\delta_0\)</td>
+    <td>Intrinsic low-power, low-temperature TLS loss tangent.</td>
+  </tr>
+  <tr>
+    <td>\(F\tan\delta_0\)</td>
+    <td>Effective TLS loss amplitude. This is usually what the resonator data determine, not \(F\) and \(\tan\delta_0\) separately.</td>
+  </tr>
+  <tr>
+    <td>\(\tanh(hf/2k_BT)\)</td>
+    <td>Thermal population factor for resonant TLS absorption at resonator frequency \(f\).</td>
+  </tr>
+</table>
+
+<p>
+Therefore the measured numerator \(A_{\rm TLS}(T,f)\) should:
+</p>
+
+<ul>
+  <li>increase as temperature decreases,</li>
+  <li>increase as resonator frequency increases,</li>
+  <li>approximately collapse to a constant after dividing by \(\tanh(hf/2k_BT)\), assuming similar TLS participation.</li>
+</ul>
+
+<p>
+Define the corrected TLS amplitude:
+</p>
+
+\[
+A_{\rm corr}(T,f)
+=
+\frac{A_{\rm TLS}(T,f)}
+{\tanh\left(\frac{hf}{2k_BT}\right)}.
+\]
+
+<p>
+The TLS model predicts:
+</p>
+
+\[
+A_{\rm corr}(T,f)
+\approx
+F\tan\delta_0.
+\]
+
+<p>
+Thus, after correction, \(A_{\rm corr}\) should be approximately independent of temperature and frequency, apart from resonator-to-resonator participation differences, fit errors, or additional loss mechanisms.
+</p>
+
+<h2>3. Useful Temperature and Frequency Scale</h2>
+
+<p>
+A useful conversion is:
+</p>
+
+\[
+\frac{hf}{k_B}
+\approx
+48\,{\rm mK}\times f_{\rm GHz}.
+\]
+
+<p>
+Therefore:
+</p>
+
+\[
+\frac{hf}{2k_BT}
+\approx
+0.48
+\frac{f_{\rm GHz}}{T/50\,{\rm mK}}.
+\]
+
+<p>
+Example values:
+</p>
+
+<table>
+  <tr>
+    <th>Temperature</th>
+    <th>\(\tanh(hf/2k_BT)\), 1 GHz</th>
+    <th>\(\tanh(hf/2k_BT)\), 2 GHz</th>
+  </tr>
+  <tr>
+    <td>50 mK</td>
+    <td>0.45</td>
+    <td>0.74</td>
+  </tr>
+  <tr>
+    <td>100 mK</td>
+    <td>0.24</td>
+    <td>0.45</td>
+  </tr>
+  <tr>
+    <td>200 mK</td>
+    <td>0.12</td>
+    <td>0.24</td>
+  </tr>
+  <tr>
+    <td>300 mK</td>
+    <td>0.080</td>
+    <td>0.16</td>
+  </tr>
+</table>
+
+<p>
+In the high-temperature limit \(k_BT \gg hf\),
+</p>
+
+\[
+\tanh\left(\frac{hf}{2k_BT}\right)
+\approx
+\frac{hf}{2k_BT}.
+\]
+
+<p>
+So in that limit:
+</p>
+
+\[
+A_{\rm TLS}(T,f)
+\propto
+\frac{f}{T}.
+\]
+
+<h2>4. Global Fit Model</h2>
+
+<p>
+For one resonator over all powers and temperatures, a useful model is:
+</p>
+
+\[
+Q_i^{-1}(P,T)
+=
+Q_{\rm other}^{-1}(T)
++
+\frac{
+F\tan\delta_0
+\,
+\tanh\left(\frac{hf}{2k_BT}\right)
+}
+{
+\left[1+\left(P_{\rm drive}/P_c\right)^\beta\right]^{1/2}
+}.
+\]
+
+<p>
+In this model:
+</p>
+
+<ul>
+  <li>\(F\tan\delta_0\), \(P_c\), and \(\beta\) may be treated as resonator-level parameters.</li>
+  <li>\(Q_{\rm other}^{-1}(T)\) may be treated as a nuisance background that varies with temperature.</li>
+  <li>If the fit is unstable, \(\beta\) can be shared globally across resonators or across a design group.</li>
+</ul>
+
+<p>
+For resonator \(i\), temperature \(T_j\), and power \(P_k\), write:
+</p>
+
+\[
+y_{ijk}
+=
+B_{ij}
++
+\frac{
+A_i
+\,
+\tanh\left(\frac{hf_i}{2k_BT_j}\right)
+}
+{
+\left[1+\left(P_k/P_{c,i}\right)^\beta\right]^{1/2}
+},
+\]
+
+<p>
+where:
+</p>
+
+\[
+y_{ijk}=Q_{i}^{-1}(P_k,T_j),
+\]
+
+\[
+B_{ij}=Q_{{\rm res},i}^{-1}(T_j),
+\]
+
+\[
+A_i=F_i\tan\delta_0.
+\]
+
+<h2>5. Recommended Fitting Strategy</h2>
+
+<h3>5.1 First pass: fit each temperature independently</h3>
+
+<p>
+For each resonator and each temperature, fit:
+</p>
+
+\[
+Q_i^{-1}(P)
+=
+B
++
+\frac{A_T}
+{\left[1+\left(P/P_c\right)^\beta\right]^{1/2}}.
+\]
+
+<p>
+Save the fitted parameters:
+</p>
+
+<ul>
+  <li>\(B = Q_{\rm other}^{-1}\)</li>
+  <li>\(A_T = A_{\rm TLS}(T,f)\)</li>
+  <li>\(P_c\)</li>
+  <li>\(\beta\)</li>
+  <li>fit uncertainty and fit quality metrics</li>
+</ul>
+
+<p>
+Then test:
+</p>
+
+\[
+A_T
+\stackrel{?}{\propto}
+\tanh\left(\frac{hf}{2k_BT}\right).
+\]
+
+<h3>5.2 Second pass: fit all temperatures for one resonator</h3>
+
+<p>
+For each resonator, fit all powers and temperatures simultaneously:
+</p>
+
+\[
+Q_i^{-1}(P,T)
+=
+B(T)
++
+\frac{
+A_0
+\,
+\tanh\left(\frac{hf}{2k_BT}\right)
+}
+{
+\left[1+\left(P/P_c\right)^\beta\right]^{1/2}
+}.
+\]
+
+<p>
+Here \(A_0=F\tan\delta_0\). \(B(T)\) can initially be one free value per temperature, although this is a nuisance-rich fit. Later, \(B(T)\) can be replaced by a smoother model if justified.
+</p>
+
+<h3>5.3 Third pass: array-level fit</h3>
+
+<p>
+For many resonators, use shared parameters where physically reasonable:
+</p>
+
+<ul>
+  <li>Use one global \(\beta\), or one \(\beta\) per design group.</li>
+  <li>Allow \(F_i\tan\delta_0\) to vary per resonator.</li>
+  <li>Allow \(P_{c,i}\) to vary per resonator unless internal photon number normalization is used.</li>
+  <li>Allow \(Q_{{\rm res},i}^{-1}(T)\) to vary with resonator and temperature.</li>
+</ul>
+
+<div class="good">
+  <strong>Best robust output:</strong> report both the fitted \(F\tan\delta_0\) and the observed saturable loss over the measured power range:
+  \[
+  \Delta Q_{\rm sat}^{-1}
+  =
+  Q_i^{-1}(P_{\rm low})-Q_i^{-1}(P_{\rm high}).
+  \]
+  The second quantity is less model-dependent.
+</div>
+
+<h2>6. Internal Power and Photon Number</h2>
+
+<p>
+Fitting versus raw drive power gives \(P_c\), not the true internal TLS saturation power.
+The conversion from feedline power to resonator internal energy depends on attenuation, coupling, loaded
+quality factor, and resonance frequency.
+</p>
+
+<p>
+A useful approximate internal photon number scaling for a notch resonator is:
+</p>
+
+\[
+\bar n
+\propto
+\frac{P_{\rm feed} Q_r^2}{\hbar \omega_r^2 Q_c}.
+\]
+
+<p>
+The exact prefactor depends on convention and resonator model. However, the important point is that
+the internal photon number is not simply proportional to raw source power. It varies with:
+</p>
+
+<ul>
+  <li>\(Q_r\)</li>
+  <li>\(Q_c\)</li>
+  <li>\(\omega_r = 2\pi f_r\)</li>
+  <li>line attenuation and gain calibration</li>
+</ul>
+
+<p>
+If possible, refit the TLS saturation model using \(\bar n\) instead of \(P_{\rm drive}\):
+</p>
+
+\[
+Q_i^{-1}(\bar n,T)
+=
+Q_{\rm other}^{-1}(T)
++
+\frac{
+F\tan\delta_0
+\,
+\tanh\left(\frac{hf}{2k_BT}\right)
+}
+{
+\left[1+\left(\bar n/n_c\right)^\beta\right]^{1/2}
+}.
+\]
+
+<p>
+Then \(n_c\) is the effective critical photon number for TLS saturation.
+</p>
+
+<h2>7. Frequency Shift Analysis</h2>
+
+<p>
+TLS affects not only loss but also the real dielectric response. The resonant frequency is:
+</p>
+
+\[
+f_r \approx \frac{1}{2\pi\sqrt{LC}}.
+\]
+
+<p>
+For small shifts:
+</p>
+
+\[
+\frac{\Delta f_r}{f_r}
+\approx
+-\frac{1}{2}\frac{\Delta L}{L}
+-\frac{1}{2}\frac{\Delta C}{C}.
+\]
+
+<p>
+TLS saturation is expected to reduce the TLS contribution to the effective dielectric constant:
+</p>
+
+\[
+P_{\rm drive}\uparrow
+\quad \Rightarrow \quad
+\epsilon_{\rm TLS}\downarrow
+\quad \Rightarrow \quad
+C_{\rm eff}\downarrow
+\quad \Rightarrow \quad
+f_r\uparrow.
+\]
+
+<p>
+Quasiparticle heating or nonlinear kinetic inductance usually gives the opposite frequency sign:
+</p>
+
+\[
+P_{\rm drive}\uparrow
+\quad \Rightarrow \quad
+L_k\uparrow
+\quad \Rightarrow \quad
+f_r\downarrow.
+\]
+
+<p>
+A phenomenological power-dependent frequency model is:
+</p>
+
+\[
+\frac{\Delta f_r(P,T)}{f_r}
+=
+x_0(T)
++
+A_f(T)
+\left[
+1-
+\frac{1}
+{\left[1+\left(P/P_{c,f}\right)^\gamma\right]^{1/2}}
+\right]
++
+A_a a(P,T)
++
+x_{\rm other}(P,T).
+\]
+
+<p>
+In this expression:
+</p>
+
+<ul>
+  <li>The \(A_f\) term represents upward TLS capacitance saturation.</li>
+  <li>The \(A_a a(P,T)\) term represents the contribution correlated with the Swenson nonlinear parameter.</li>
+  <li>\(x_{\rm other}\) represents heating, quasiparticles, fit artifacts, or other effects.</li>
+</ul>
+
+<p>
+A strong TLS signature is:
+</p>
+
+\[
+P_{c,f}
+\approx
+P_{c,Q},
+\]
+
+<p>
+meaning that the power scale for frequency saturation matches the power scale for \(Q_i\) improvement.
+</p>
+
+<h2>8. Role of the Swenson Nonlinear Parameter \(a\)</h2>
+
+<p>
+The nonlinear parameter \(a\) from the Swenson-style resonator fit is a useful diagnostic for inductive
+nonlinearity and line-shape distortion. It should be compared against the measured frequency shift and
+loss improvement.
+</p>
+
+<p>
+Define:
+</p>
+
+\[
+\Delta x(P,T)
+=
+\frac{f_r(P,T)-f_r(P_{\rm low},T)}{f_r(P_{\rm low},T)}.
+\]
+
+<p>
+Then make scatter plots:
+</p>
+
+<ul>
+  <li>\(\Delta x\) versus \(a\)</li>
+  <li>\(\Delta Q_i^{-1}\) versus \(a\)</li>
+  <li>\(\Delta x\) versus \(\Delta Q_i^{-1}\)</li>
+</ul>
+
+<p>
+where:
+</p>
+
+\[
+\Delta Q_i^{-1}
+=
+Q_i^{-1}(P_{\rm low},T)
+-
+Q_i^{-1}(P,T).
+\]
+
+<p>
+Expected signatures:
+</p>
+
+<table>
+  <tr>
+    <th>Observation</th>
+    <th>Interpretation</th>
+  </tr>
+  <tr>
+    <td>\(\Delta x>0\), \(Q_i\uparrow\), weak correlation with \(a\)</td>
+    <td>Likely TLS capacitance/loss saturation.</td>
+  </tr>
+  <tr>
+    <td>\(\Delta x<0\), strong correlation with \(a\)</td>
+    <td>Likely kinetic-inductance nonlinearity or heating-dominated behavior.</td>
+  </tr>
+  <tr>
+    <td>\(\Delta x>0\), strong correlation with \(\Delta Q_i^{-1}\)</td>
+    <td>Strong TLS evidence: same saturating mechanism affects loss and dispersion.</td>
+  </tr>
+  <tr>
+    <td>Frequency shifts upward at moderate power but turns downward at high power</td>
+    <td>Possible crossover from TLS saturation to heating or kinetic-inductance nonlinearity.</td>
+  </tr>
+</table>
+
+<h2>9. Required Diagnostic Plots</h2>
+
+<h3>9.1 Per-resonator power sweeps</h3>
+
+<ul>
+  <li>Plot \(Q_i^{-1}\) versus \(P_{\rm drive}\) for each temperature.</li>
+  <li>Plot fitted TLS saturation curves over the data.</li>
+  <li>Plot residuals versus power.</li>
+  <li>Mark any powers excluded because of bifurcation, distorted fits, or heating.</li>
+</ul>
+
+<h3>9.2 TLS numerator versus model factor</h3>
+
+<p>
+For each fitted temperature slice, plot:
+</p>
+
+\[
+A_{\rm TLS}(T,f)
+\quad \text{versus} \quad
+u(T,f)
+=
+\tanh\left(\frac{hf}{2k_BT}\right).
+\]
+
+<p>
+TLS prediction:
+</p>
+
+\[
+A_{\rm TLS}=F\tan\delta_0 \, u.
+\]
+
+<p>
+So the plot should be approximately linear through the origin for each resonator or design group.
+</p>
+
+<h3>9.3 Corrected numerator</h3>
+
+<p>
+Plot:
+</p>
+
+\[
+A_{\rm corr}
+=
+\frac{A_{\rm TLS}}
+{\tanh\left(\frac{hf}{2k_BT}\right)}
+\]
+
+<p>
+versus:
+</p>
+
+<ul>
+  <li>temperature,</li>
+  <li>resonator frequency,</li>
+  <li>resonator index,</li>
+  <li>design group,</li>
+  <li>wafer position.</li>
+</ul>
+
+<p>
+TLS prediction: \(A_{\rm corr}\) should be much flatter versus temperature and frequency than the raw numerator.
+</p>
+
+<h3>9.4 Saturation power</h3>
+
+<p>
+Plot:
+</p>
+
+<ul>
+  <li>\(P_c\) versus resonator frequency,</li>
+  <li>\(P_c\) versus \(Q_r\),</li>
+  <li>\(P_c\) versus \(Q_c\),</li>
+  <li>critical photon number \(n_c\), if available, versus frequency.</li>
+</ul>
+
+<p>
+If fitting versus raw drive power, apparent frequency trends in \(P_c\) may be caused by
+coupling and resonator energy buildup rather than intrinsic TLS physics.
+</p>
+
+<h3>9.5 Frequency-shift checks</h3>
+
+<ul>
+  <li>Plot \(\Delta f_r/f_r\) versus \(P_{\rm drive}\) for each temperature.</li>
+  <li>Compare the frequency saturation power to the \(Q_i\) saturation power.</li>
+  <li>Plot \(\Delta f_r/f_r\) versus \(\Delta Q_i^{-1}\).</li>
+  <li>Plot \(\Delta f_r/f_r\) versus nonlinear parameter \(a\).</li>
+</ul>
+
+<h2>10. Fit Quality and Failure Modes</h2>
+
+<h3>10.1 Good TLS-like behavior</h3>
+
+<p>
+A strong TLS interpretation is supported if:
+</p>
+
+<ul>
+  <li>\(Q_i^{-1}\) decreases with power at low/moderate powers.</li>
+  <li>The decrease has a saturating shape.</li>
+  <li>The fitted numerator \(A_{\rm TLS}\) follows \(\tanh(hf/2k_BT)\).</li>
+  <li>The corrected numerator \(A_{\rm corr}\) is flatter versus \(T\) and \(f\).</li>
+  <li>The resonance frequency shifts upward over the same power range.</li>
+  <li>The frequency and loss saturation powers are similar.</li>
+  <li>The upward frequency shift correlates better with \(\Delta Q_i^{-1}\) than with the nonlinear parameter \(a\).</li>
+</ul>
+
+<h3>10.2 Warning signs</h3>
+
+<p>
+Be cautious if:
+</p>
+
+<ul>
+  <li>The high-power data do not reach a plateau.</li>
+  <li>\(Q_i\) eventually decreases at high power, indicating heating or excess quasiparticles.</li>
+  <li>The resonance curves are strongly bifurcated or distorted.</li>
+  <li>The fitted \(Q_i\), \(f_r\), or \(a\) are strongly correlated in the nonlinear fit covariance.</li>
+  <li>The extracted \(\beta\) varies wildly with temperature.</li>
+  <li>The fitted \(A_{\rm TLS}\) does not decrease with temperature.</li>
+  <li>The corrected \(A_{\rm corr}\) becomes more temperature-dependent than the raw numerator.</li>
+</ul>
+
+<div class="warning">
+  <strong>Important caveat:</strong> If the power sweep only covers the rising part of \(Q_i(P)\) and does not bracket the saturation rollover or high-power asymptote, then \(Q_{\rm other}\), \(A_{\rm TLS}\), \(P_c\), and \(\beta\) can become highly correlated. In that case, report the observed saturable loss over the measured range as a robust lower-bound-like quantity.
+</div>
+
+<h2>11. Suggested Code Structure</h2>
+
+<h3>11.1 Input table</h3>
+
+<p>
+Use a long-form table with one row per resonator, temperature, and power:
+</p>
+
+<pre><code>resonator_id
+design_group
+temperature_K
+drive_power_dBm
+drive_power_linear_W
+frequency_Hz
+Qi
+Qr
+Qc
+a_nonlinear
+fit_quality_flags
+</code></pre>
+
+<h3>11.2 Derived columns</h3>
+
+<pre><code>loss = 1 / Qi
+f_GHz = frequency_Hz / 1e9
+tls_u = tanh(h * frequency_Hz / (2 * k_B * temperature_K))
+</code></pre>
+
+<h3>11.3 Fixed-temperature fit function</h3>
+
+<pre><code>def tls_loss_vs_power(P, B, A, Pc, beta):
+    return B + A / sqrt(1 + (P / Pc)**beta)
+</code></pre>
+
+<p>
+where:
+</p>
+
+<ul>
+  <li><code>B</code> is \(Q_{\rm other}^{-1}\),</li>
+  <li><code>A</code> is \(A_{\rm TLS}(T,f)\),</li>
+  <li><code>Pc</code> is \(P_c\),</li>
+  <li><code>beta</code> is the saturation exponent.</li>
+</ul>
+
+<h3>11.4 Multi-temperature fit function</h3>
+
+<pre><code>def tls_loss_vs_power_temp(P, T, f, B_of_T, A0, Pc, beta):
+    u = tanh(h * f / (2 * k_B * T))
+    return B_of_T[T] + A0 * u / sqrt(1 + (P / Pc)**beta)
+</code></pre>
+
+<p>
+In practical code, <code>B_of_T</code> can be represented as one fitted nuisance parameter per temperature,
+or as a smooth function of temperature.
+</p>
+
+<h3>11.5 Corrected numerator</h3>
+
+<pre><code>A_corr = A_fit / tanh(h * frequency_Hz / (2 * k_B * temperature_K))
+</code></pre>
+
+<h2>12. Recommended Outputs</h2>
+
+<p>
+For each resonator, save:
+</p>
+
+<ul>
+  <li>\(A_{\rm TLS}(T)\) from fixed-temperature fits.</li>
+  <li>\(A_{\rm corr}(T)\).</li>
+  <li>Best-fit \(F\tan\delta_0\) from multi-temperature fit.</li>
+  <li>\(P_c\) or \(n_c\), if photon number normalization is available.</li>
+  <li>\(\beta\).</li>
+  <li>\(Q_{\rm other}(T)\).</li>
+  <li>Fit residual RMS and reduced \(\chi^2\), if uncertainties are available.</li>
+  <li>Flags for bad fits, high-power heating, bifurcation, or missing plateau.</li>
+</ul>
+
+<p>
+For the array, save:
+</p>
+
+<ul>
+  <li>Median \(F\tan\delta_0\) by design group.</li>
+  <li>Distribution of \(F\tan\delta_0\).</li>
+  <li>Distribution of \(\beta\).</li>
+  <li>Distribution of \(P_c\) or \(n_c\).</li>
+  <li>Correlation of \(\Delta f_r/f_r\) with \(\Delta Q_i^{-1}\).</li>
+  <li>Correlation of \(\Delta f_r/f_r\) with nonlinear parameter \(a\).</li>
+</ul>
+
+<h2>13. Interpretation Summary</h2>
+
+<p>
+If the TLS model is correct, then the power-dependent loss should be described by:
+</p>
+
+\[
+Q_i^{-1}(P,T)
+=
+Q_{\rm other}^{-1}(T)
++
+\frac{
+F\tan\delta_0
+\,
+\tanh\left(\frac{hf}{2k_BT}\right)
+}
+{
+\left[1+\left(P/P_c\right)^\beta\right]^{1/2}
+}.
+\]
+
+<p>
+The strongest evidence for TLS would be:
+</p>
+
+<ul>
+  <li>The numerator of the power-saturating term follows \(\tanh(hf/2k_BT)\).</li>
+  <li>After dividing by \(\tanh(hf/2k_BT)\), the inferred \(F\tan\delta_0\) is relatively flat versus temperature and frequency.</li>
+  <li>The resonance frequency shifts upward over the same power range where \(Q_i\) improves.</li>
+  <li>The frequency-shift saturation power agrees with the loss-saturation power.</li>
+  <li>The effect is strongest at low temperature.</li>
+</ul>
+
+<p>
+This combination supports the interpretation that the moderate-power increase in \(Q_i\) and upward
+frequency shift are dominated by TLS saturation in the capacitive/dielectric part of the resonator,
+rather than quasiparticle heating or nonlinear kinetic inductance.
+</p>
+
+<h2>14. References to Add</h2>
+
+<ul>
+  <li>J. Gao, <em>The Physics of Superconducting Microwave Resonators</em>, PhD thesis, Caltech, 2008.</li>
+  <li>D. P. Pappas et al., “Two Level System Loss in Superconducting Microwave Resonators,” <em>IEEE Transactions on Applied Superconductivity</em>, 21, 871–874, 2011.</li>
+  <li>L. J. Swenson et al., nonlinear resonator model paper for KID bifurcation and nonlinear fitting.</li>
+  <li>J. Gao et al. and related MKID TLS noise/loss papers, as needed.</li>
+</ul>
+
+</body>
+</html>
+```
